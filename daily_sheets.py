@@ -47,15 +47,17 @@ def calc_price(raw_price, partner_raw):
 
 # ── FETCH FROM PREVIO ────────────────────────────────────
 def fetch_today_reservations():
+    # Previo uses datetime format, fetch wider range and filter manually
+    FETCH_FROM = (TODAY - timedelta(days=1)).strftime("%Y-%m-%d")
+    FETCH_TO   = (TODAY + timedelta(days=1)).strftime("%Y-%m-%d")
     xml_body = f"""<?xml version="1.0" encoding="utf-8"?>
 <request>
   <login>{PREVIO_LOGIN}</login>
   <password>{PREVIO_PASS}</password>
   <hotId>{PREVIO_HOT_ID}</hotId>
   <term>
-    <from>{TODAY_STR}</from>
-    <to>{TODAY_STR}</to>
-    <termType>check-out</termType>
+    <from>{FETCH_FROM}</from>
+    <to>{FETCH_TO}</to>
   </term>
   <limit>300</limit>
 </request>"""
@@ -77,6 +79,14 @@ def parse_reservations(xml_bytes):
         def t(tag, default=""):
             el = res.find(tag)
             return el.text.strip() if el is not None and el.text else default
+
+        # Filter: only reservations checking out TODAY
+        date_to_raw = t("term/to")
+        if not date_to_raw:
+            continue
+        date_to_clean = date_to_raw[:10].strip("'")  # strip apostrophe if present
+        if date_to_clean != TODAY_STR:
+            continue
 
         partner_raw = t("objectKind/name") or t("note")
         # Try to get partner from note field
