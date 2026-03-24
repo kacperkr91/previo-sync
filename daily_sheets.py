@@ -295,6 +295,12 @@ def main():
     _root = _ET.fromstring(xml_data)
     _all = _root.findall(".//reservation")
     print(f"Raw reservations in XML: {len(_all)}")
+    # Debug: show first 5 checkout dates
+    for _r in _all[:5]:
+        _to = _r.find("term/to")
+        _apt = _r.find("object/name")
+        print(f"  Sample: apt={_apt.text if _apt is not None else '?'} dataDo={_to.text if _to is not None else '?'}")
+    print(f"Looking for checkout date: '{TODAY_STR}'")
     rows = parse_reservations(xml_data)
     print(f"Found {len(rows)} reservations checking out today ({TODAY_STR})")
 
