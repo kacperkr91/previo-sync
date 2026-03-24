@@ -2,23 +2,20 @@ name: Sync Previo to Google Sheets
 
 on:
   schedule:
-    - cron: '0 * * * *'
+    - cron: '0 * * * *'    # Every hour — sync all reservations to Previo tab
+    - cron: '0 6 * * *'    # Every day at 7:00 AM Warsaw time (UTC+1 = 6 UTC)
   workflow_dispatch:
 
 jobs:
-  sync:
+  sync-all:
+    name: Sync all reservations
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      
-      - name: Set up Python
-        uses: actions/setup-python@v4
+      - uses: actions/setup-python@v4
         with:
           python-version: '3.11'
-      
-      - name: Install dependencies
-        run: pip install -r requirements.txt
-      
+      - run: pip install -r requirements.txt
       - name: Run sync
         env:
           PREVIO_LOGIN: ${{ secrets.PREVIO_LOGIN }}
@@ -27,3 +24,22 @@ jobs:
           GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
           GOOGLE_SERVICE_ACCOUNT: ${{ secrets.GOOGLE_SERVICE_ACCOUNT }}
         run: python sync.py
+
+  daily-sheets:
+    name: Daily reservations sheet (7 AM)
+    runs-on: ubuntu-latest
+    if: github.event.schedule == '0 6 * * *' || github.event_name == 'workflow_dispatch'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+      - run: pip install -r requirements.txt
+      - name: Run daily sync
+        env:
+          PREVIO_LOGIN: ${{ secrets.PREVIO_LOGIN }}
+          PREVIO_PASS: ${{ secrets.PREVIO_PASS }}
+          PREVIO_HOT_ID: ${{ secrets.PREVIO_HOT_ID }}
+          DAILY_SHEET_ID: ${{ secrets.DAILY_SHEET_ID }}
+          GOOGLE_SERVICE_ACCOUNT: ${{ secrets.GOOGLE_SERVICE_ACCOUNT }}
+        run: python daily_sheets.py
