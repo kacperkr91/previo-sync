@@ -9,6 +9,7 @@ import xml.etree.ElementTree as ET
 import requests
 import json
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 
@@ -170,6 +171,19 @@ def get_sheet_id(service, tab_name):
             return s["properties"]["sheetId"]
     return None
 
+def has_manual_data(service):
+    """Check if today's tab already has manually entered data (col N = Nr rachunku)"""
+    try:
+        result = service.values().get(
+            spreadsheetId=DAILY_SHEET_ID,
+            range=f"'{TAB_NAME}'!N3:N50"
+        ).execute()
+        values = result.get('values', [])
+        # If any cell in col N is non-empty, user has entered data manually
+        return any(row and row[0].strip() for row in values)
+    except:
+        return False
+
 def copy_tab_from_previous(service):
     """Copy previous day's tab as template for today"""
     prev_id = get_sheet_id(service, PREV_TAB_NAME)
@@ -275,6 +289,12 @@ def main():
 
     # Create today's tab (copy from yesterday)
     copy_tab_from_previous(service)
+
+    # Check if user already entered manual data (rachunki etc.)
+    if has_manual_data(service):
+        print(f"Tab '{TAB_NAME}' has manual data (rachunki) — skipping overwrite to protect your data!")
+        print("To force refresh, manually clear column N first.")
+        return
 
     # Clear old data rows
     clear_data_rows(service)
