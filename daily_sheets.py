@@ -119,19 +119,10 @@ def parse_reservations(xml_bytes):
         except:
             pass
 
-        # Persons
-        persons = 0
-        for gc in res.findall(".//guestCategory"):
-            try:
-                persons += int(gc.find("guaId").text or 0)
-            except:
-                pass
-        # fallback
+        # Persons — count guestCategory entries (each = 1 person)
+        persons = len(res.findall(".//guestCategory"))
         if persons == 0:
-            try:
-                persons = int(t("guest/guestCategory/guaId") or 1)
-            except:
-                persons = 1
+            persons = 1
 
         # Price
         raw_price = t("price")
@@ -222,15 +213,23 @@ def copy_tab_from_previous(service):
 
     new_sheet_id = resp["sheetId"]
 
-    # Rename to today
+    # Rename to today AND move to first position
     service.batchUpdate(
         spreadsheetId=DAILY_SHEET_ID,
-        body={"requests": [{
-            "updateSheetProperties": {
-                "properties": {"sheetId": new_sheet_id, "title": TAB_NAME},
-                "fields": "title"
+        body={"requests": [
+            {
+                "updateSheetProperties": {
+                    "properties": {"sheetId": new_sheet_id, "title": TAB_NAME},
+                    "fields": "title"
+                }
+            },
+            {
+                "updateSheetProperties": {
+                    "properties": {"sheetId": new_sheet_id, "index": 0},
+                    "fields": "index"
+                }
             }
-        }]}
+        ]}
     ).execute()
 
     print(f"Created tab '{TAB_NAME}' by copying '{PREV_TAB_NAME}'")
@@ -238,10 +237,10 @@ def copy_tab_from_previous(service):
 
 def clear_data_rows(service):
     """Clear data rows (3 onwards) but keep headers and formatting"""
-    # Clear columns A-M from row 3 onwards (keep headers in row 2)
+    # Clear columns A-M and N (Nr rachunku) from row 3 onwards
     service.values().clear(
         spreadsheetId=DAILY_SHEET_ID,
-        range=f"'{TAB_NAME}'!A3:M200"
+        range=f"'{TAB_NAME}'!A3:P200"
     ).execute()
 
 def write_reservations(service, rows):
@@ -273,6 +272,21 @@ def write_reservations(service, rows):
         range=f"'{TAB_NAME}'!A3",
         valueInputOption="USER_ENTERED",
         body={"values": values}
+    ).execute()
+
+    # Write payment formula in column O only for rows with data
+    formulas = []
+    for i in range(len(values)):
+        row_num = i + 3  # starts from row 3
+        formulas.append([
+            f'=IF($H{row_num}="Booking.com XML";"B";IF($H{row_num}="AirBnBXML2";"A";IF($H{row_num}="ProfitRoomXML";"PP";"")))'
+        ])
+
+    service.values().update(
+        spreadsheetId=DAILY_SHEET_ID,
+        range=f"'{TAB_NAME}'!O3",
+        valueInputOption="USER_ENTERED",
+        body={"values": formulas}
     ).execute()
 
     print(f"Written {len(values)} reservations to tab '{TAB_NAME}'")
