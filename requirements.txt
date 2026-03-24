@@ -1,0 +1,29 @@
+name: Sync Previo to Google Sheets
+
+on:
+  schedule:
+    - cron: '0 * * * *'  # Every hour
+  workflow_dispatch:       # Manual trigger
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+      
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      
+      - name: Run sync
+        env:
+          PREVIO_LOGIN: ${{ secrets.PREVIO_LOGIN }}
+          PREVIO_PASS: ${{ secrets.PREVIO_PASS }}
+          PREVIO_HOT_ID: ${{ secrets.PREVIO_HOT_ID }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+          GOOGLE_SERVICE_ACCOUNT: ${{ secrets.GOOGLE_SERVICE_ACCOUNT }}
+        run: python sync.py
