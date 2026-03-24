@@ -2,8 +2,8 @@ name: Sync Previo to Google Sheets
 
 on:
   schedule:
-    - cron: '0 * * * *'    # Every hour — sync all reservations to Previo tab
-    - cron: '0 6 * * *'    # Every day at 7:00 AM Warsaw time (UTC+1 = 6 UTC)
+    - cron: '0 * * * *'
+    - cron: '0 6 * * *'
   workflow_dispatch:
 
 jobs:
@@ -26,7 +26,7 @@ jobs:
         run: python sync.py
 
   daily-sheets:
-    name: Daily reservations sheet (7 AM)
+    name: Daily reservations sheet
     runs-on: ubuntu-latest
     if: github.event.schedule == '0 6 * * *' || github.event_name == 'workflow_dispatch'
     steps:
