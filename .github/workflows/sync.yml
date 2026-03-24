@@ -1,23 +1,29 @@
-# Previo -> Google Sheets Sync
+name: Sync Previo to Google Sheets
 
-Automatyczny sync rezerwacji z Previo API do Google Sheets co godzinę.
+on:
+  schedule:
+    - cron: '0 * * * *'
+  workflow_dispatch:
 
-## Konfiguracja
-
-### 1. GitHub Secrets
-W repozytorium GitHub → Settings → Secrets → Actions dodaj:
-- `PREVIO_LOGIN` — login do Previo (kacper@oldtownvistula.pl)
-- `PREVIO_PASS` — hasło do Previo
-- `PREVIO_HOT_ID` — ID hotelu (762331)
-- `GOOGLE_SHEET_ID` — ID arkusza Google Sheets
-- `GOOGLE_SERVICE_ACCOUNT` — JSON z kluczem Service Account
-
-### 2. Google Service Account
-1. Wejdź na console.cloud.google.com
-2. APIs & Services → Credentials → Create Service Account
-3. Pobierz JSON z kluczem
-4. Udostępnij arkusz Google Sheets temu Service Account (email z JSON)
-5. Wklej cały JSON jako secret GOOGLE_SERVICE_ACCOUNT
-
-### 3. Uruchomienie
-Actions → Sync Previo to Google Sheets → Run workflow (test ręczny)
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+      
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      
+      - name: Run sync
+        env:
+          PREVIO_LOGIN: ${{ secrets.PREVIO_LOGIN }}
+          PREVIO_PASS: ${{ secrets.PREVIO_PASS }}
+          PREVIO_HOT_ID: ${{ secrets.PREVIO_HOT_ID }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+          GOOGLE_SERVICE_ACCOUNT: ${{ secrets.GOOGLE_SERVICE_ACCOUNT }}
+        run: python sync.py
