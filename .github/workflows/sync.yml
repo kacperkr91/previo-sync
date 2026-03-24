@@ -29,6 +29,8 @@ jobs:
     name: Daily reservations sheet
     runs-on: ubuntu-latest
     if: github.event.schedule == '0 6 * * *' || github.event_name == 'workflow_dispatch'
+    env:
+      TZ: Europe/Warsaw
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v4
