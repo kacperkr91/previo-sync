@@ -8,8 +8,7 @@ import os
 import xml.etree.ElementTree as ET
 import requests
 import json
-from datetime import datetime, timedelta
-from zoneinfo import ZoneInfo
+from datetime import datetime, timedelta, timezone
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 
