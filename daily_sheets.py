@@ -84,7 +84,10 @@ def parse_reservations(xml_bytes):
         date_to_raw = t("term/to")
         if not date_to_raw:
             continue
-        date_to_clean = date_to_raw[:10].strip("'")  # strip apostrophe if present
+        date_to_clean = date_to_raw[:10].strip("'").strip()
+        # Debug first few
+        if len(rows) < 3:
+            print(f"  Filter check: raw='{date_to_raw}' clean='{date_to_clean}' today='{TODAY_STR}' match={date_to_clean==TODAY_STR}")
         if date_to_clean != TODAY_STR:
             continue
 
