@@ -280,17 +280,25 @@ def main():
     # Fetch from Previo
     print("Fetching from Previo API...")
     xml_data = fetch_today_reservations()
+    # Debug: show raw count from XML
+    import xml.etree.ElementTree as _ET
+    _root = _ET.fromstring(xml_data)
+    _all = _root.findall(".//reservation")
+    print(f"Raw reservations in XML: {len(_all)}")
     rows = parse_reservations(xml_data)
-    print(f"Found {len(rows)} reservations checking out today")
+    print(f"Found {len(rows)} reservations checking out today ({TODAY_STR})")
 
     # Google Sheets
     service = get_service()
 
     # Create today's tab (copy from yesterday)
+    # Track if tab existed before this run
+    tab_existed = get_sheet_id(service, TAB_NAME) is not None
     copy_tab_from_previous(service)
 
     # Check if user already entered manual data (rachunki etc.)
-    if has_manual_data(service):
+    # Only protect if tab already existed BEFORE this run
+    if tab_existed and has_manual_data(service):
         print(f"Tab '{TAB_NAME}' has manual data (rachunki) — skipping overwrite to protect your data!")
         print("To force refresh, manually clear column N first.")
         return
