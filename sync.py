@@ -21,9 +21,9 @@ SHEET_ID      = os.environ["GOOGLE_SHEET_ID"]
 SHEET_NAME    = "Previo"   # Tab name in Google Sheets
 SERVICE_ACCOUNT_JSON = os.environ["GOOGLE_SERVICE_ACCOUNT"]
 
-# Fetch last 12 months + next 3 months
-DATE_FROM = (datetime.now() - timedelta(days=365)).strftime("%Y-%m-%d")
-DATE_TO   = (datetime.now() + timedelta(days=90)).strftime("%Y-%m-%d")
+# Fetch from start of 2025 to end of 2026
+DATE_FROM = "2025-01-01"
+DATE_TO   = "2026-12-31" 
 
 # ── FETCH FROM PREVIO ────────────────────────────────────
 def fetch_reservations():
