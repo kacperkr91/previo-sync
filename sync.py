@@ -21,33 +21,60 @@ SHEET_ID      = os.environ["GOOGLE_SHEET_ID"]
 SHEET_NAME    = "Previo"   # Tab name in Google Sheets
 SERVICE_ACCOUNT_JSON = os.environ["GOOGLE_SERVICE_ACCOUNT"]
 
-# Fetch from start of 2025 to end of 2026
-DATE_FROM = "2025-01-01"
-DATE_TO   = "2026-12-31" 
+# Fetch month by month to overcome 300 limit
+FETCH_START = "2025-01-01"
+FETCH_END   = "2026-12-31" 
 
 # ── FETCH FROM PREVIO ────────────────────────────────────
 def fetch_reservations():
-    xml_body = f"""<?xml version="1.0" encoding="utf-8"?>
+    import xml.etree.ElementTree as ET2
+    from datetime import date
+    
+    # Fetch month by month to overcome Previo's 300 reservation limit
+    all_rows = []
+    start = date.fromisoformat(FETCH_START)
+    end   = date.fromisoformat(FETCH_END)
+    
+    current = start.replace(day=1)
+    while current <= end:
+        # Last day of month
+        if current.month == 12:
+            next_month = current.replace(year=current.year+1, month=1, day=1)
+        else:
+            next_month = current.replace(month=current.month+1, day=1)
+        month_end = next_month - timedelta(days=1)
+        
+        xml_body = f"""<?xml version="1.0" encoding="utf-8"?>
 <request>
   <login>{PREVIO_LOGIN}</login>
   <password>{PREVIO_PASS}</password>
   <hotId>{PREVIO_HOT_ID}</hotId>
   <term>
-    <from>{DATE_FROM}</from>
-    <to>{DATE_TO}</to>
+    <from>{current.isoformat()}</from>
+    <to>{month_end.isoformat()}</to>
     <termType>check-out</termType>
   </term>
-  <limit>5000</limit>
+  <limit>300</limit>
 </request>"""
+        resp = requests.post(
+            PREVIO_URL,
+            data=xml_body.encode("utf-8"),
+            headers={"Content-Type": "application/xml"},
+            timeout=30
+        )
+        resp.raise_for_status()
+        root = ET2.fromstring(resp.content)
+        month_rows = root.findall(".//reservation")
+        all_rows.extend(month_rows)
+        print(f"  {current.strftime('%Y-%m')}: {len(month_rows)} reservations")
+        
+        current = next_month
     
-    resp = requests.post(
-        PREVIO_URL,
-        data=xml_body.encode("utf-8"),
-        headers={"Content-Type": "application/xml"},
-        timeout=120
-    )
-    resp.raise_for_status()
-    return resp.content
+    print(f"Total: {len(all_rows)} reservations")
+    combined = ET2.Element("reservations")
+    for r in all_rows:
+        combined.append(r)
+    return ET2.tostring(combined, encoding="utf-8")
 
 def parse_reservations(xml_bytes):
     root = ET.fromstring(xml_bytes)
@@ -150,7 +177,7 @@ def write_to_sheets(service, rows):
 
 # ── MAIN ─────────────────────────────────────────────────
 def main():
-    print(f"Fetching reservations {DATE_FROM} - {DATE_TO}...")
+    print(f"Fetching reservations {FETCH_START} - {FETCH_END} month by month...")
     
     xml_data = fetch_reservations()
     rows = parse_reservations(xml_data)
