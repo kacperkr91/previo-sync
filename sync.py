@@ -27,7 +27,12 @@ DATE_TO   = "2026-12-31"
 
 # ── FETCH FROM PREVIO ────────────────────────────────────
 def fetch_reservations():
-    xml_body = f"""<?xml version="1.0" encoding="utf-8"?>
+    # Fetch in chunks to get all reservations (Previo limit=300 per request)
+    all_xml_rows = []
+    offset = 0
+    
+    while True:
+        xml_body = f"""<?xml version="1.0" encoding="utf-8"?>
 <request>
   <login>{PREVIO_LOGIN}</login>
   <password>{PREVIO_PASS}</password>
@@ -38,16 +43,39 @@ def fetch_reservations():
     <termType>check-out</termType>
   </term>
   <limit>300</limit>
+  <offset>{offset}</offset>
 </request>"""
+        
+        resp = requests.post(
+            PREVIO_URL,
+            data=xml_body.encode("utf-8"),
+            headers={"Content-Type": "application/xml"},
+            timeout=30
+        )
+        resp.raise_for_status()
+        
+        import xml.etree.ElementTree as ET2
+        root = ET2.fromstring(resp.content)
+        reservations = root.findall(".//reservation")
+        
+        if not reservations:
+            break
+            
+        all_xml_rows.extend(reservations)
+        print(f"Fetched {len(all_xml_rows)} reservations so far (offset={offset})...")
+        
+        if len(reservations) < 300:
+            break
+            
+        offset += 300
     
-    resp = requests.post(
-        PREVIO_URL,
-        data=xml_body.encode("utf-8"),
-        headers={"Content-Type": "application/xml"},
-        timeout=30
-    )
-    resp.raise_for_status()
-    return resp.content
+    print(f"Total reservations fetched: {len(all_xml_rows)}")
+    
+    # Build combined XML
+    combined = ET2.Element("reservations")
+    for r in all_xml_rows:
+        combined.append(r)
+    return ET2.tostring(combined, encoding="utf-8")
 
 def parse_reservations(xml_bytes):
     root = ET.fromstring(xml_bytes)
