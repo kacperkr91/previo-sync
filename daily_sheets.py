@@ -8,7 +8,7 @@ import os
 import xml.etree.ElementTree as ET
 import requests
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 
@@ -47,17 +47,15 @@ def calc_price(raw_price, partner_raw):
 
 # ── FETCH FROM PREVIO ────────────────────────────────────
 def fetch_today_reservations():
-    # Previo uses datetime format, fetch wider range and filter manually
-    FETCH_FROM = (TODAY - timedelta(days=1)).strftime("%Y-%m-%d")
-    FETCH_TO   = (TODAY + timedelta(days=1)).strftime("%Y-%m-%d")
     xml_body = f"""<?xml version="1.0" encoding="utf-8"?>
 <request>
   <login>{PREVIO_LOGIN}</login>
   <password>{PREVIO_PASS}</password>
   <hotId>{PREVIO_HOT_ID}</hotId>
   <term>
-    <from>{FETCH_FROM}</from>
-    <to>{FETCH_TO}</to>
+    <from>{TODAY_STR}</from>
+    <to>{TODAY_STR}</to>
+    <termType>check-out</termType>
   </term>
   <limit>300</limit>
 </request>"""
@@ -79,17 +77,6 @@ def parse_reservations(xml_bytes):
         def t(tag, default=""):
             el = res.find(tag)
             return el.text.strip() if el is not None and el.text else default
-
-        # Filter: only reservations checking out TODAY
-        date_to_raw = t("term/to")
-        if not date_to_raw:
-            continue
-        date_to_clean = date_to_raw[:10].strip("'").strip()
-        # Debug first few
-        if len(rows) < 3:
-            print(f"  Filter check: raw='{date_to_raw}' clean='{date_to_clean}' today='{TODAY_STR}' match={date_to_clean==TODAY_STR}")
-        if date_to_clean != TODAY_STR:
-            continue
 
         partner_raw = t("objectKind/name") or t("note")
         # Try to get partner from note field
@@ -119,10 +106,19 @@ def parse_reservations(xml_bytes):
         except:
             pass
 
-        # Persons — count guestCategory entries (each = 1 person)
-        persons = len(res.findall(".//guestCategory"))
+        # Persons
+        persons = 0
+        for gc in res.findall(".//guestCategory"):
+            try:
+                persons += int(gc.find("guaId").text or 0)
+            except:
+                pass
+        # fallback
         if persons == 0:
-            persons = 1
+            try:
+                persons = int(t("guest/guestCategory/guaId") or 1)
+            except:
+                persons = 1
 
         # Price
         raw_price = t("price")
@@ -174,19 +170,6 @@ def get_sheet_id(service, tab_name):
             return s["properties"]["sheetId"]
     return None
 
-def has_manual_data(service):
-    """Check if today's tab already has manually entered data (col N = Nr rachunku)"""
-    try:
-        result = service.values().get(
-            spreadsheetId=DAILY_SHEET_ID,
-            range=f"'{TAB_NAME}'!N3:N50"
-        ).execute()
-        values = result.get('values', [])
-        # If any cell in col N is non-empty, user has entered data manually
-        return any(row and row[0].strip() for row in values)
-    except:
-        return False
-
 def copy_tab_from_previous(service):
     """Copy previous day's tab as template for today"""
     prev_id = get_sheet_id(service, PREV_TAB_NAME)
@@ -213,23 +196,15 @@ def copy_tab_from_previous(service):
 
     new_sheet_id = resp["sheetId"]
 
-    # Rename to today AND move to first position
+    # Rename to today
     service.batchUpdate(
         spreadsheetId=DAILY_SHEET_ID,
-        body={"requests": [
-            {
-                "updateSheetProperties": {
-                    "properties": {"sheetId": new_sheet_id, "title": TAB_NAME},
-                    "fields": "title"
-                }
-            },
-            {
-                "updateSheetProperties": {
-                    "properties": {"sheetId": new_sheet_id, "index": 0},
-                    "fields": "index"
-                }
+        body={"requests": [{
+            "updateSheetProperties": {
+                "properties": {"sheetId": new_sheet_id, "title": TAB_NAME},
+                "fields": "title"
             }
-        ]}
+        }]}
     ).execute()
 
     print(f"Created tab '{TAB_NAME}' by copying '{PREV_TAB_NAME}'")
@@ -237,30 +212,31 @@ def copy_tab_from_previous(service):
 
 def clear_data_rows(service):
     """Clear data rows (3 onwards) but keep headers and formatting"""
-    # Clear columns A-M and N (Nr rachunku) from row 3 onwards
+    # Clear columns A-M from row 3 onwards (keep headers in row 2)
     service.values().clear(
         spreadsheetId=DAILY_SHEET_ID,
-        range=f"'{TAB_NAME}'!A3:P200"
+        range=f"'{TAB_NAME}'!A3:M200"
     ).execute()
 
 def write_reservations(service, rows):
     """Write reservation data to sheet"""
     values = []
-    for r in rows:
+    for i, r in enumerate(rows):
+        row_num = i + 3  # starts from row 3
         values.append([
-            r["dataRez"],   # A - Data rezerwacji
-            r["dataOd"],    # B - Data od
-            r["dataDo"],    # C - Data do
-            r["noce"],      # D - Noce
-            r["osoby"],     # E - Osoby
-            r["gosc"],      # F - Goście
-            r["nr"],        # G - Nr rezerwacji
-            r["partner"],   # H - Partner
-            r["status"],    # I - Status
-            r["apt"],       # J - Apartament
-            r["cena"],      # K - Cena z systemu (numeric)
-            "",             # L - Dopłata (manual)
-            r["cena"],      # M - Cena całkowita (= K for now)
+            r["dataRez"],           # A - Data rezerwacji
+            r["dataOd"],            # B - Data od
+            r["dataDo"],            # C - Data do
+            r["noce"],              # D - Noce
+            r["osoby"],             # E - Osoby
+            r["gosc"],              # F - Goście
+            r["nr"],                # G - Nr rezerwacji
+            r["partner"],           # H - Partner
+            r["status"],            # I - Status
+            r["apt"],               # J - Apartament
+            r["cena"],              # K - Cena z systemu (numeric)
+            "",                     # L - Dopłata (manual)
+            f"=K{row_num}+L{row_num}",  # M - Cena całkowita = K + L
         ])
 
     if not values:
@@ -272,21 +248,6 @@ def write_reservations(service, rows):
         range=f"'{TAB_NAME}'!A3",
         valueInputOption="USER_ENTERED",
         body={"values": values}
-    ).execute()
-
-    # Write payment formula in column O only for rows with data
-    formulas = []
-    for i in range(len(values)):
-        row_num = i + 3  # starts from row 3
-        formulas.append([
-            f'=IF($H{row_num}="Booking.com XML";"B";IF($H{row_num}="AirBnBXML2";"A";IF($H{row_num}="ProfitRoomXML";"PP";"")))'
-        ])
-
-    service.values().update(
-        spreadsheetId=DAILY_SHEET_ID,
-        range=f"'{TAB_NAME}'!O3",
-        valueInputOption="USER_ENTERED",
-        body={"values": formulas}
     ).execute()
 
     print(f"Written {len(values)} reservations to tab '{TAB_NAME}'")
@@ -307,34 +268,14 @@ def main():
     # Fetch from Previo
     print("Fetching from Previo API...")
     xml_data = fetch_today_reservations()
-    # Debug: show raw count from XML
-    import xml.etree.ElementTree as _ET
-    _root = _ET.fromstring(xml_data)
-    _all = _root.findall(".//reservation")
-    print(f"Raw reservations in XML: {len(_all)}")
-    # Debug: show first 5 checkout dates
-    for _r in _all[:5]:
-        _to = _r.find("term/to")
-        _apt = _r.find("object/name")
-        print(f"  Sample: apt={_apt.text if _apt is not None else '?'} dataDo={_to.text if _to is not None else '?'}")
-    print(f"Looking for checkout date: '{TODAY_STR}'")
     rows = parse_reservations(xml_data)
-    print(f"Found {len(rows)} reservations checking out today ({TODAY_STR})")
+    print(f"Found {len(rows)} reservations checking out today")
 
     # Google Sheets
     service = get_service()
 
     # Create today's tab (copy from yesterday)
-    # Track if tab existed before this run
-    tab_existed = get_sheet_id(service, TAB_NAME) is not None
     copy_tab_from_previous(service)
-
-    # Check if user already entered manual data (rachunki etc.)
-    # Only protect if tab already existed BEFORE this run
-    if tab_existed and has_manual_data(service):
-        print(f"Tab '{TAB_NAME}' has manual data (rachunki) — skipping overwrite to protect your data!")
-        print("To force refresh, manually clear column N first.")
-        return
 
     # Clear old data rows
     clear_data_rows(service)
