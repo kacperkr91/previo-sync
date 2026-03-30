@@ -196,15 +196,23 @@ def copy_tab_from_previous(service):
 
     new_sheet_id = resp["sheetId"]
 
-    # Rename to today
+    # Rename to today AND move to first position
     service.batchUpdate(
         spreadsheetId=DAILY_SHEET_ID,
-        body={"requests": [{
-            "updateSheetProperties": {
-                "properties": {"sheetId": new_sheet_id, "title": TAB_NAME},
-                "fields": "title"
+        body={"requests": [
+            {
+                "updateSheetProperties": {
+                    "properties": {"sheetId": new_sheet_id, "title": TAB_NAME},
+                    "fields": "title"
+                }
+            },
+            {
+                "updateSheetProperties": {
+                    "properties": {"sheetId": new_sheet_id, "index": 0},
+                    "fields": "index"
+                }
             }
-        }]}
+        ]}
     ).execute()
 
     print(f"Created tab '{TAB_NAME}' by copying '{PREV_TAB_NAME}'")
@@ -261,23 +269,66 @@ def update_tab_date(service):
         body={"values": [[TODAY_STR]]}
     ).execute()
 
+# ── MANUAL DATA CHECK ────────────────────────────────────
+def has_manual_data(service):
+    """Check if today's tab already has manually entered data (col N = Nr rachunku)"""
+    try:
+        result = service.values().get(
+            spreadsheetId=DAILY_SHEET_ID,
+            range=f"'{TAB_NAME}'!N3:N50"
+        ).execute()
+        values = result.get('values', [])
+        return any(row and row[0].strip() for row in values)
+    except:
+        return False
+
+def has_reservation_data(service):
+    """Check if today's tab already has reservation data (col A = dataRez)"""
+    try:
+        result = service.values().get(
+            spreadsheetId=DAILY_SHEET_ID,
+            range=f"'{TAB_NAME}'!A3:A10"
+        ).execute()
+        values = result.get('values', [])
+        return any(row and row[0].strip() for row in values)
+    except:
+        return False
+
 # ── MAIN ─────────────────────────────────────────────────
 def main():
     print(f"Daily sync for {TAB_NAME} ({TODAY_STR})")
 
-    # Fetch from Previo
-    print("Fetching from Previo API...")
-    xml_data = fetch_today_reservations()
-    rows = parse_reservations(xml_data)
-    print(f"Found {len(rows)} reservations checking out today")
-
     # Google Sheets
     service = get_service()
 
-    # Create today's tab (copy from yesterday)
+    # Create today's tab (copy from yesterday) if not exists
+    tab_existed = get_sheet_id(service, TAB_NAME) is not None
     copy_tab_from_previous(service)
 
-    # Clear old data rows
+    # If tab already has manual data (rachunki) — skip to protect user data
+    if tab_existed and has_manual_data(service):
+        print(f"Tab '{TAB_NAME}' has manual data (rachunki) — skipping to protect your data.")
+        return
+
+    # Fetch from Previo
+    print("Fetching from Previo API...")
+    xml_data = fetch_today_reservations()
+
+    # Debug: show raw count from XML
+    import xml.etree.ElementTree as _ET
+    _root = _ET.fromstring(xml_data)
+    _all = _root.findall(".//reservation")
+    print(f"Raw reservations in XML: {len(_all)}")
+    for _r in _all[:5]:
+        _to = _r.find("term/to")
+        _apt = _r.find("object/name")
+        print(f"  Sample: apt={_apt.text if _apt is not None else '?'} dataDo={_to.text if _to is not None else '?'}")
+    print(f"Looking for checkout date: '{TODAY_STR}'")
+
+    rows = parse_reservations(xml_data)
+    print(f"Found {len(rows)} reservations checking out today ({TODAY_STR})")
+
+    # Clear old data rows (A-P)
     clear_data_rows(service)
 
     # Write today's date in A1
@@ -285,6 +336,21 @@ def main():
 
     # Write reservations
     write_reservations(service, rows)
+
+    # Write payment formula in column O only for rows with data
+    if rows:
+        formulas = []
+        for i in range(len(rows)):
+            row_num = i + 3
+            formulas.append([
+                f'=IF($H{row_num}="Booking.com XML";"B";IF($H{row_num}="AirBnBXML2";"A";IF($H{row_num}="ProfitRoomXML";"PP";"")))'
+            ])
+        service.values().update(
+            spreadsheetId=DAILY_SHEET_ID,
+            range=f"'{TAB_NAME}'!O3",
+            valueInputOption="USER_ENTERED",
+            body={"values": formulas}
+        ).execute()
 
     print(f"Done! Tab '{TAB_NAME}' updated.")
 
