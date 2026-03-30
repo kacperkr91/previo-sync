@@ -112,13 +112,10 @@ def parse_reservations(xml_bytes):
         except:
             pass
 
-        # Persons
-        persons = 0
-        for gc in res.findall(".//guestCategory"):
-            try:
-                persons += int(gc.find("guaId").text or 0)
-            except:
-                pass
+        # Persons — count guestCategory entries (each = 1 person)
+        persons = len(res.findall(".//guestCategory"))
+        if persons == 0:
+            persons = 1
         # fallback
         if persons == 0:
             try:
