@@ -47,15 +47,17 @@ def calc_price(raw_price, partner_raw):
 
 # ── FETCH FROM PREVIO ────────────────────────────────────
 def fetch_today_reservations():
+    # Fetch ±1 day range and filter manually — termType=check-out unreliable
+    FETCH_FROM = (TODAY - timedelta(days=1)).strftime("%Y-%m-%d")
+    FETCH_TO   = (TODAY + timedelta(days=1)).strftime("%Y-%m-%d")
     xml_body = f"""<?xml version="1.0" encoding="utf-8"?>
 <request>
   <login>{PREVIO_LOGIN}</login>
   <password>{PREVIO_PASS}</password>
   <hotId>{PREVIO_HOT_ID}</hotId>
   <term>
-    <from>{TODAY_STR}</from>
-    <to>{TODAY_STR}</to>
-    <termType>check-out</termType>
+    <from>{FETCH_FROM}</from>
+    <to>{FETCH_TO}</to>
   </term>
   <limit>300</limit>
 </request>"""
@@ -94,7 +96,11 @@ def parse_reservations(xml_bytes):
 
         # Dates
         date_from = t("term/from")[:10]
-        date_to   = t("term/to")[:10]
+        date_to   = t("term/to")[:10].strip("'")
+
+        # Filter: only checkouts TODAY
+        if date_to != TODAY_STR:
+            continue
         created   = t("created")[:10]
 
         # Nights
@@ -305,7 +311,16 @@ def main():
     tab_existed = get_sheet_id(service, TAB_NAME) is not None
     copy_tab_from_previous(service)
 
-    # If tab already has manual data (rachunki) — skip to protect user data
+    # Always clear col N (Nr rachunku) after copy — it gets copied from previous day
+    # User will re-enter manually for today
+    if not tab_existed:
+        service.values().clear(
+            spreadsheetId=DAILY_SHEET_ID,
+            range=f"'{TAB_NAME}'!N3:N200"
+        ).execute()
+        print(f"Cleared col N (rachunki) from copied template")
+
+    # If tab already had manual data (rachunki) before this run — skip to protect
     if tab_existed and has_manual_data(service):
         print(f"Tab '{TAB_NAME}' has manual data (rachunki) — skipping to protect your data.")
         return
