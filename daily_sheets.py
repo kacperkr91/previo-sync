@@ -24,8 +24,8 @@ SERVICE_ACCOUNT_JSON = os.environ["GOOGLE_SERVICE_ACCOUNT"]
 # Today's date
 TODAY = datetime.now()
 TODAY_STR     = TODAY.strftime("%Y-%m-%d")
-TAB_NAME      = TODAY.strftime("%-d.%m")   # e.g. "24.03"
-PREV_TAB_NAME = (TODAY - timedelta(days=1)).strftime("%-d.%m")  # e.g. "23.03"
+TAB_NAME      = TODAY.strftime("%d.%m")   # e.g. "01.04" with leading zero
+PREV_TAB_NAME = (TODAY - timedelta(days=1)).strftime("%d.%m")  # e.g. "31.03"
 
 AIRBNB_COMMISSION = 0.155  # 15.5%
 
@@ -173,27 +173,34 @@ def get_sheet_id(service, tab_name):
             return s["properties"]["sheetId"]
     return None
 
+TEMPLATE_TAB = "_SZABLON"  # Always copy from this template tab
+
 def copy_tab_from_previous(service):
-    """Copy previous day's tab as template for today"""
-    prev_id = get_sheet_id(service, PREV_TAB_NAME)
+    """Copy from template tab for today"""
     today_id = get_sheet_id(service, TAB_NAME)
 
     if today_id is not None:
         print(f"Tab '{TAB_NAME}' already exists")
         return today_id
 
-    if prev_id is None:
-        print(f"Previous tab '{PREV_TAB_NAME}' not found, creating blank tab")
+    # Try template first, fall back to previous day
+    template_id = get_sheet_id(service, TEMPLATE_TAB)
+    source_id   = template_id or get_sheet_id(service, PREV_TAB_NAME)
+    source_name = TEMPLATE_TAB if template_id else PREV_TAB_NAME
+
+    if source_id is None:
+        print(f"No template or previous tab found, creating blank tab")
         service.batchUpdate(
             spreadsheetId=DAILY_SHEET_ID,
             body={"requests": [{"addSheet": {"properties": {"title": TAB_NAME}}}]}
         ).execute()
         return get_sheet_id(service, TAB_NAME)
 
-    # Duplicate previous tab
+    print(f"Copying from '{source_name}'")
+    # Duplicate source tab
     resp = service.sheets().copyTo(
         spreadsheetId=DAILY_SHEET_ID,
-        sheetId=prev_id,
+        sheetId=source_id,
         body={"destinationSpreadsheetId": DAILY_SHEET_ID}
     ).execute()
 
