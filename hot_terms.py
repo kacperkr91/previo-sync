@@ -34,14 +34,33 @@ def fetch_events():
             "model": "claude-sonnet-4-20250514",
             "max_tokens": 2000,
             "tools": [{"type": "web_search_20250305", "name": "web_search"}],
-            "system": """Jesteś ekspertem od rynku noclegowego w Krakowie.
+            "system": """Jesteś ekspertem od rynku noclegowego w Krakowie. Twoje zadanie to znaleźć WSZYSTKIE ważne wydarzenia które generują duże zapotrzebowanie na noclegi.
+
 Zwróć TYLKO poprawny JSON bez żadnego innego tekstu, bez markdown, bez komentarzy.
 Format odpowiedzi:
-{"updated":"YYYY-MM-DD","events":[{"name":"string","date_from":"YYYY-MM-DD","date_to":"YYYY-MM-DD","category":"koncert|sport|konferencja|festiwal|targi|inne","impact":"wysoki|sredni|niski","venue":"string","description":"string max 100 znaków","expected_visitors":"string lub null"}]}
-Sortuj chronologicznie. Uwzględnij tylko eventy min. 500 osób lub znane cykliczne.""",
+{"updated":"YYYY-MM-DD","events":[{"name":"string","date_from":"YYYY-MM-DD","date_to":"YYYY-MM-DD","category":"koncert|sport|maraton|konferencja|festiwal|targi|inne","impact":"wysoki|sredni|niski","venue":"string","description":"string max 100 znaków","expected_visitors":"string lub null"}]}
+
+Zasady:
+- impact=wysoki: ponad 5000 uczestników lub gwiazda światowej sławy lub znany maraton
+- impact=sredni: 1000-5000 uczestników lub znany artysta krajowy
+- impact=niski: 500-1000 uczestników
+- Zawsze szukaj konkretnych dat w internecie przed odpowiedzią
+- Sortuj chronologicznie
+- Jeśli nie znasz dokładnej daty zakończenia użyj tej samej co rozpoczęcia""",
             "messages": [{
                 "role": "user",
-                "content": f"Znajdź hot terminy w Krakowie które generują duże zapotrzebowanie na noclegi. Dzisiaj: {TODAY}. Szukaj wydarzeń do {DATE_TO}. Koncerty, sport, konferencje, festiwale, targi. Zwróć tylko JSON."
+                "content": f"""Znajdź hot terminy w Krakowie które generują duże zapotrzebowanie na noclegi. Dzisiaj: {TODAY}. Szukaj wydarzeń do {DATE_TO}.
+
+Sprawdź KONIECZNIE te kategorie i wyszukaj konkretne daty:
+1. MARATONY I BIEGI - Kraków Maraton, Wings for Life, PKO Maraton, biegi uliczne
+2. KONCERTY - Tauron Arena Kraków, ICE Kraków, Klub Studio, koncerty plenerowe (Eric Clapton, inne gwiazdy)
+3. SPORT - mecze Wisły Kraków, Cracovii, zawody sportowe, turnieje
+4. FESTIWALE - Wianki, Kraków Live Festival, Off Festival, Unsound, Sacrum Profanum
+5. TARGI I KONFERENCJE - targi w EXPO Kraków, Centrum Targowe
+6. ŚWIĘTA I IMPREZY MIEJSKIE - Lajkonik, Juwenalia, Sylwester miejski
+7. WYDARZENIA KULTURALNE - Festiwal Filmowy, Opera, Filharmonia (premiery)
+
+Szukaj w internecie konkretnych dat dla każdej kategorii. Zwróć tylko JSON bez żadnego tekstu przed lub po."""
             }]
         },
         timeout=120
