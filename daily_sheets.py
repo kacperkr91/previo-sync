@@ -356,7 +356,7 @@ def main():
                                 "textFormat": {
                                     "foregroundColor": {"red": 1.0, "green": 1.0, "blue": 1.0},
                                     "bold": True,
-                                    "fontSize": 14
+                                    "fontSize": 10
                                 },
                                 "horizontalAlignment": "CENTER"
                             }
