@@ -324,6 +324,50 @@ def main():
         ).execute()
         print(f"Cleared col N (rachunki) from copied template")
 
+        # Set A1 to red NIEGOTOWE status
+        service.values().update(
+            spreadsheetId=DAILY_SHEET_ID,
+            range=f"'{TAB_NAME}'!Q1",
+            valueInputOption="RAW",
+            body={"values": [["🔴 NIEGOTOWE — NIE NABIJAJ"]]}
+        ).execute()
+
+        # Set red tab color and red A1 formatting
+        sheet_id = get_sheet_id(service, TAB_NAME)
+        service.batchUpdate(
+            spreadsheetId=DAILY_SHEET_ID,
+            body={"requests": [
+                {
+                    "updateSheetProperties": {
+                        "properties": {
+                            "sheetId": sheet_id,
+                            "tabColorStyle": {"rgbColor": {"red": 0.83, "green": 0.0, "blue": 0.0}}
+                        },
+                        "fields": "tabColorStyle"
+                    }
+                },
+                {
+                    "repeatCell": {
+                        "range": {"sheetId": sheet_id, "startRowIndex": 0, "endRowIndex": 1,
+                                  "startColumnIndex": 16, "endColumnIndex": 17, "startRowIndex": 10, "endRowIndex": 11},
+                        "cell": {
+                            "userEnteredFormat": {
+                                "backgroundColor": {"red": 0.83, "green": 0.0, "blue": 0.0},
+                                "textFormat": {
+                                    "foregroundColor": {"red": 1.0, "green": 1.0, "blue": 1.0},
+                                    "bold": True,
+                                    "fontSize": 14
+                                },
+                                "horizontalAlignment": "CENTER"
+                            }
+                        },
+                        "fields": "userEnteredFormat"
+                    }
+                }
+            ]}
+        ).execute()
+        print(f"Set red status in A1 and red tab color")
+
     # If tab already had manual data (rachunki) before this run — skip to protect
     if tab_existed and has_manual_data(service):
         print(f"Tab '{TAB_NAME}' has manual data (rachunki) — skipping to protect your data.")
