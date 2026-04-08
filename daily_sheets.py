@@ -324,15 +324,15 @@ def main():
         ).execute()
         print(f"Cleared col N (rachunki) from copied template")
 
-        # Set A1 to red NIEGOTOWE status
+        # Set Q11 to red NIEGOTOWE status
         service.values().update(
             spreadsheetId=DAILY_SHEET_ID,
-            range=f"'{TAB_NAME}'!Q1",
+            range=f"'{TAB_NAME}'!Q11",
             valueInputOption="RAW",
             body={"values": [["🔴 NIEGOTOWE — NIE NABIJAJ"]]}
         ).execute()
 
-        # Set red tab color and red A1 formatting
+        # Set red tab color and red Q11 formatting
         sheet_id = get_sheet_id(service, TAB_NAME)
         service.batchUpdate(
             spreadsheetId=DAILY_SHEET_ID,
@@ -348,8 +348,13 @@ def main():
                 },
                 {
                     "repeatCell": {
-                        "range": {"sheetId": sheet_id, "startRowIndex": 0, "endRowIndex": 1,
-                                  "startColumnIndex": 16, "endColumnIndex": 17, "startRowIndex": 10, "endRowIndex": 11},
+                        "range": {
+                            "sheetId": sheet_id,
+                            "startRowIndex": 10,
+                            "endRowIndex": 11,
+                            "startColumnIndex": 16,
+                            "endColumnIndex": 18
+                        },
                         "cell": {
                             "userEnteredFormat": {
                                 "backgroundColor": {"red": 0.83, "green": 0.0, "blue": 0.0},
@@ -366,7 +371,7 @@ def main():
                 }
             ]}
         ).execute()
-        print(f"Set red status in A1 and red tab color")
+        print(f"Set red NIEGOTOWE status in Q11 and red tab color")
 
     # If tab already had manual data (rachunki) before this run — skip to protect
     if tab_existed and has_manual_data(service):
@@ -393,9 +398,6 @@ def main():
 
     # Clear old data rows (A-P)
     clear_data_rows(service)
-
-    # Write today's date in A1
-    update_tab_date(service)
 
     # Write reservations
     write_reservations(service, rows)
