@@ -341,7 +341,7 @@ def main():
                     "updateSheetProperties": {
                         "properties": {
                             "sheetId": sheet_id,
-                            "tabColorStyle": {"rgbColor": {"red": 0.83, "green": 0.0, "blue": 0.0}}
+                            "tabColorStyle": {"rgbColor": {"red": 0.06, "green": 0.73, "blue": 0.37}}
                         },
                         "fields": "tabColorStyle"
                     }
