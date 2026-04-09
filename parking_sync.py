@@ -224,25 +224,26 @@ def write_to_sheets(cards, mail_date, alert_count, service):
     ).execute()
     print(f"✅ Dopisano {len(cards)} kart od {mail_date} (wiersze {next_row}–{next_row+len(cards)-1})")
     print(f"🚨 Kart do doładowania: {alert_count}")
+    return next_row  # zwróć numer pierwszego wiersza tego zestawu
 
 # ── MAIN ─────────────────────────────────────────────────
-def get_last_synced_msg_id(service):
-    """Sprawdź ID ostatnio zapisanego maila z arkusza (komórka K1)."""
+def get_synced_msg_ids(service):
+    """Pobierz wszystkie już przetworzone ID maili z kolumny J."""
     try:
         result = service.values().get(
             spreadsheetId=PARKING_SPREADSHEET_ID,
-            range=f"'{PARKING_SHEET_NAME}'!K1"
+            range=f"'{PARKING_SHEET_NAME}'!J:J"
         ).execute()
-        val = result.get("values", [[""]])[0][0]
-        return str(val).strip()
+        vals = result.get("values", [])
+        return set(str(v[0]).strip() for v in vals if v and str(v[0]).strip())
     except:
-        return ""
+        return set()
 
-def save_msg_id(service, msg_id):
-    """Zapisz ID maila do komórki K1 jako znacznik."""
+def save_msg_id(service, msg_id, row):
+    """Zapisz ID maila do kolumny J przy pierwszym wierszu tego zestawu."""
     service.values().update(
         spreadsheetId=PARKING_SPREADSHEET_ID,
-        range=f"'{PARKING_SHEET_NAME}'!K1",
+        range=f"'{PARKING_SHEET_NAME}'!J{row}",
         valueInputOption="RAW",
         body={"values": [[msg_id]]},
     ).execute()
@@ -267,8 +268,8 @@ def main():
 
     # 3. Sprawdź czy ten mail był już przetworzony
     service = get_sheets_service()
-    last_msg_id = get_last_synced_msg_id(service)
-    if last_msg_id == msg_id:
+    synced_ids = get_synced_msg_ids(service)
+    if msg_id in synced_ids:
         print(f"✅ Mail {msg_id} już przetworzony — brak zmian, pomijam zapis.")
         return
 
@@ -292,11 +293,13 @@ def main():
         for c in alerts:
             print(f"  ...{c['bilet'][-6:]} — {c['dni']}d {c['h']}h ({c['typ']})")
 
-    # 6. Zapisz do Sheets + zapamiętaj ID maila
+    # 6. Najpierw zarezerwuj ID maila (zapobiega duplikatom przy równoległych uruchomieniach)
+    save_msg_id(service, msg_id)
+    print(f"Zarezerwowano ID maila: {msg_id}")
+
+    # 7. Zapisz dane do Sheets
     mail_date = datetime.now().strftime("%Y-%m-%d")
     write_to_sheets(cards, mail_date, len(alerts), service)
-    save_msg_id(service, msg_id)
-    print(f"Zapisano ID maila: {msg_id}")
 
 if __name__ == "__main__":
     main()
