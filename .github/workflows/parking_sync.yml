@@ -1,0 +1,33 @@
+name: Parking Sync
+
+on:
+  schedule:
+    # Co czwartek o 10:00 CET (08:00 UTC) — mail od koordynatora przychodzi w środę/czwartek
+    - cron: '0 8 * * 4'
+  workflow_dispatch:  # Możliwość uruchomienia ręcznie
+
+jobs:
+  parking-sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install requests cryptography
+
+      - name: Run parking sync
+        env:
+          GMAIL_CLIENT_ID:      ${{ secrets.GMAIL_CLIENT_ID }}
+          GMAIL_CLIENT_SECRET:  ${{ secrets.GMAIL_CLIENT_SECRET }}
+          GMAIL_REFRESH_TOKEN:  ${{ secrets.GMAIL_REFRESH_TOKEN }}
+          PARKING_SPREADSHEET_ID: ${{ secrets.PARKING_SPREADSHEET_ID }}
+          GOOGLE_SERVICE_ACCOUNT: ${{ secrets.GOOGLE_SERVICE_ACCOUNT }}
+        run: python parking_sync.py
