@@ -172,9 +172,8 @@ def get_sheets_service():
     )
     return build("sheets", "v4", credentials=creds).spreadsheets()
 
-def write_to_sheets(cards, mail_date, alert_count):
-    """Zapisz dane kart do arkusza Google Sheets — tak samo jak daily_sheets.py."""
-    service = get_sheets_service()
+def write_to_sheets(cards, mail_date, alert_count, service):
+    """Dopisz nowy zestaw kart do historii w arkuszu Google Sheets."""
 
     # Sprawdź czy zakładka Parking istnieje, utwórz jeśli nie
     meta = service.get(spreadsheetId=PARKING_SPREADSHEET_ID, fields="sheets.properties.title").execute()
@@ -185,10 +184,24 @@ def write_to_sheets(cards, mail_date, alert_count):
             "requests": [{"addSheet": {"properties": {"title": PARKING_SHEET_NAME}}}]
         }).execute()
         print(f"Utworzono zakładkę '{PARKING_SHEET_NAME}'")
+        # Nagłówki
+        service.values().update(
+            spreadsheetId=PARKING_SPREADSHEET_ID,
+            range=f"'{PARKING_SHEET_NAME}'!A1",
+            valueInputOption="RAW",
+            body={"values": [["Data maila", "L.P.", "Nr biletu", "Ważny do", "Godziny", "Dni", "H", "Typ", "Alert", "Mail ID"]]},
+        ).execute()
 
-    # Nagłówki + dane
-    header_row = ["Data maila", "L.P.", "Nr biletu", "Ważny do", "Godziny", "Dni", "H", "Typ", "Alert", "Aktualizacja"]
-    rows = [header_row]
+    # Sprawdź ile wierszy jest już w arkuszu
+    existing = service.values().get(
+        spreadsheetId=PARKING_SPREADSHEET_ID,
+        range=f"'{PARKING_SHEET_NAME}'!A:A"
+    ).execute()
+    next_row = len(existing.get("values", [])) + 1
+
+    # Dopisz nowe wiersze na dół
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
+    rows = []
     for c in cards:
         rows.append([
             mail_date,
@@ -200,19 +213,16 @@ def write_to_sheets(cards, mail_date, alert_count):
             c["h"],
             c["typ"],
             "TAK" if c["alert"] else "NIE",
-            datetime.now().strftime("%Y-%m-%d %H:%M"),
+            "",  # Mail ID zapisujemy osobno w K1
         ])
 
-    # Wyczyść i zapisz
-    range_name = f"'{PARKING_SHEET_NAME}'!A1:J500"
-    service.values().clear(spreadsheetId=PARKING_SPREADSHEET_ID, range=range_name).execute()
     service.values().update(
         spreadsheetId=PARKING_SPREADSHEET_ID,
-        range=f"'{PARKING_SHEET_NAME}'!A1",
+        range=f"'{PARKING_SHEET_NAME}'!A{next_row}",
         valueInputOption="RAW",
         body={"values": rows},
     ).execute()
-    print(f"✅ Zapisano {len(cards)} kart do arkusza '{PARKING_SHEET_NAME}'")
+    print(f"✅ Dopisano {len(cards)} kart od {mail_date} (wiersze {next_row}–{next_row+len(cards)-1})")
     print(f"🚨 Kart do doładowania: {alert_count}")
 
 # ── MAIN ─────────────────────────────────────────────────
@@ -284,7 +294,7 @@ def main():
 
     # 6. Zapisz do Sheets + zapamiętaj ID maila
     mail_date = datetime.now().strftime("%Y-%m-%d")
-    write_to_sheets(cards, mail_date, len(alerts))
+    write_to_sheets(cards, mail_date, len(alerts), service)
     save_msg_id(service, msg_id)
     print(f"Zapisano ID maila: {msg_id}")
 
