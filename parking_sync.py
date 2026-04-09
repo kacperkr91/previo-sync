@@ -21,6 +21,8 @@ import json
 import base64
 import requests
 from datetime import datetime
+from google.oauth2 import service_account
+from googleapiclient.discovery import build
 
 # ── CONFIG ──────────────────────────────────────────────
 PARKING_SHEET_NAME = "Parking"
@@ -161,70 +163,31 @@ def parse_parking_email(text):
     return results
 
 # ── GOOGLE SHEETS WRITE ──────────────────────────────────
-def get_sheets_token():
-    """Uzyskaj token do zapisu przez Service Account."""
-    if not GS_SA_JSON_B64:
-        raise ValueError("GOOGLE_SERVICE_ACCOUNT nie ustawiony")
-
-    sa_json = json.loads(base64.b64decode(GS_SA_JSON_B64))
-
-    import time
-    import hmac
-    import hashlib
-
-    # JWT dla Google OAuth2
-    header = base64.urlsafe_b64encode(json.dumps({"alg": "RS256", "typ": "JWT"}).encode()).rstrip(b"=")
-    now = int(time.time())
-    claim = base64.urlsafe_b64encode(json.dumps({
-        "iss": sa_json["client_email"],
-        "scope": "https://www.googleapis.com/auth/spreadsheets",
-        "aud": "https://oauth2.googleapis.com/token",
-        "iat": now,
-        "exp": now + 3600,
-    }).encode()).rstrip(b"=")
-
-    from cryptography.hazmat.primitives import serialization, hashes
-    from cryptography.hazmat.primitives.asymmetric import padding
-
-    private_key = serialization.load_pem_private_key(
-        sa_json["private_key"].encode(), password=None
+def get_sheets_service():
+    """Uzyskaj service do zapisu przez Service Account — tak samo jak daily_sheets.py."""
+    creds_dict = json.loads(GS_SA_JSON_B64)
+    creds = service_account.Credentials.from_service_account_info(
+        creds_dict,
+        scopes=["https://www.googleapis.com/auth/spreadsheets"]
     )
-    signature = private_key.sign(
-        header + b"." + claim,
-        padding.PKCS1v15(),
-        hashes.SHA256(),
-    )
-    sig_b64 = base64.urlsafe_b64encode(signature).rstrip(b"=")
-    jwt_token = header + b"." + claim + b"." + sig_b64
-
-    resp = requests.post("https://oauth2.googleapis.com/token", data={
-        "grant_type": "urn:ietf:params:oauth:grant-type:jwt-bearer",
-        "assertion": jwt_token.decode(),
-    })
-    resp.raise_for_status()
-    return resp.json()["access_token"]
+    return build("sheets", "v4", credentials=creds).spreadsheets()
 
 def write_to_sheets(cards, mail_date, alert_count):
-    """Zapisz dane kart do arkusza Google Sheets."""
-    token = get_sheets_token()
-    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-    base_url = f"https://sheets.googleapis.com/v4/spreadsheets/{PARKING_SPREADSHEET_ID}"
+    """Zapisz dane kart do arkusza Google Sheets — tak samo jak daily_sheets.py."""
+    service = get_sheets_service()
 
     # Sprawdź czy zakładka Parking istnieje, utwórz jeśli nie
-    meta = requests.get(base_url, headers=headers, params={"fields": "sheets.properties.title"})
-    meta.raise_for_status()
-    sheets = [s["properties"]["title"] for s in meta.json().get("sheets", [])]
+    meta = service.get(spreadsheetId=PARKING_SPREADSHEET_ID, fields="sheets.properties.title").execute()
+    sheets = [s["properties"]["title"] for s in meta.get("sheets", [])]
 
     if PARKING_SHEET_NAME not in sheets:
-        requests.post(f"{base_url}:batchUpdate", headers=headers, json={
+        service.batchUpdate(spreadsheetId=PARKING_SPREADSHEET_ID, body={
             "requests": [{"addSheet": {"properties": {"title": PARKING_SHEET_NAME}}}]
-        }).raise_for_status()
+        }).execute()
         print(f"Utworzono zakładkę '{PARKING_SHEET_NAME}'")
 
-    # Nagłówki
+    # Nagłówki + dane
     header_row = ["Data maila", "L.P.", "Nr biletu", "Ważny do", "Godziny", "Dni", "H", "Typ", "Alert", "Aktualizacja"]
-    
-    # Dane
     rows = [header_row]
     for c in cards:
         rows.append([
@@ -239,21 +202,16 @@ def write_to_sheets(cards, mail_date, alert_count):
             "TAK" if c["alert"] else "NIE",
             datetime.now().strftime("%Y-%m-%d %H:%M"),
         ])
-    
-    # Wyczyść zakładkę i wpisz nowe dane
-    enc_range = requests.utils.quote(f"'{PARKING_SHEET_NAME}'!A1:J500")
-    requests.delete(
-        f"https://sheets.googleapis.com/v4/spreadsheets/{PARKING_SPREADSHEET_ID}/values/{enc_range}",
-        headers=headers,
-    )
 
-    resp = requests.put(
-        f"https://sheets.googleapis.com/v4/spreadsheets/{PARKING_SPREADSHEET_ID}/values/{enc_range}",
-        headers=headers,
-        params={"valueInputOption": "RAW"},
-        json={"range": f"'{PARKING_SHEET_NAME}'!A1", "values": rows},
-    )
-    resp.raise_for_status()
+    # Wyczyść i zapisz
+    range_name = f"'{PARKING_SHEET_NAME}'!A1:J500"
+    service.values().clear(spreadsheetId=PARKING_SPREADSHEET_ID, range=range_name).execute()
+    service.values().update(
+        spreadsheetId=PARKING_SPREADSHEET_ID,
+        range=f"'{PARKING_SHEET_NAME}'!A1",
+        valueInputOption="RAW",
+        body={"values": rows},
+    ).execute()
     print(f"✅ Zapisano {len(cards)} kart do arkusza '{PARKING_SHEET_NAME}'")
     print(f"🚨 Kart do doładowania: {alert_count}")
 
