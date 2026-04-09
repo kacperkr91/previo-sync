@@ -21,7 +21,7 @@ jobs:
           python-version: '3.11'
 
       - name: Install dependencies
-        run: pip install requests cryptography
+        run: pip install requests google-auth google-api-python-client
 
       - name: Run parking sync
         env:
