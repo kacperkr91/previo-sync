@@ -2,8 +2,8 @@ name: Parking Sync
 
 on:
   schedule:
-    # Co czwartek o 10:00 CET (08:00 UTC) — mail od koordynatora przychodzi w środę/czwartek
-    - cron: '0 8 * * 4'
+    # Co godzinę pn-pt, 7:00-19:00 CET (6:00-18:00 UTC)
+    - cron: '0 6-18 * * 1-5'
   workflow_dispatch:  # Możliwość uruchomienia ręcznie
 
 jobs:
