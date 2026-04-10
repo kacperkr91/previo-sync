@@ -137,6 +137,10 @@ def parse_reservations(xml_bytes):
         # Voucher / reservation number
         voucher = t("voucher") or t("resId")
 
+        # Company / KASUJ
+        company = t("company/name").strip()
+        notatka = "Kasuj" if company.lower() == "kasuj" else ""
+
         rows.append({
             "dataRez":  created,        # A
             "dataOd":   date_from,      # B
@@ -150,6 +154,7 @@ def parse_reservations(xml_bytes):
             "apt":      apt,            # J
             "cena":     price,          # K (numeric for formatting)
             "cena_fmt": price_fmt,      # K display
+            "notatka":  notatka,        # N - KASUJ jeśli brak sprzątania
         })
 
     # Sort by apartment name
@@ -255,6 +260,7 @@ def write_reservations(service, rows):
             r["cena"],              # K - Cena z systemu (numeric)
             "",                     # L - Dopłata (manual)
             f"=K{row_num}+L{row_num}",  # M - Cena całkowita = K + L
+            r.get("notatka", ""),   # N - KASUJ jeśli brak sprzątania
         ])
 
     if not values:
