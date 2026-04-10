@@ -238,7 +238,7 @@ def clear_data_rows(service):
     # Clear columns A-M from row 3 onwards (keep headers in row 2)
     service.values().clear(
         spreadsheetId=DAILY_SHEET_ID,
-        range=f"'{TAB_NAME}'!A3:M200"
+        range=f"'{TAB_NAME}'!A3:P200"
     ).execute()
 
 def write_reservations(service, rows):
@@ -260,7 +260,9 @@ def write_reservations(service, rows):
             r["cena"],              # K - Cena z systemu (numeric)
             "",                     # L - Dopłata (manual)
             f"=K{row_num}+L{row_num}",  # M - Cena całkowita = K + L
-            r.get("notatka", ""),   # N - KASUJ jeśli brak sprzątania
+            "",                     # N - Nr rachunku (manual)
+            "",                     # O - (puste)
+            r.get("notatka", ""),   # P - Kasuj jeśli brak sprzątania
         ])
 
     if not values:
@@ -328,7 +330,11 @@ def main():
             spreadsheetId=DAILY_SHEET_ID,
             range=f"'{TAB_NAME}'!N3:N200"
         ).execute()
-        print(f"Cleared col N (rachunki) from copied template")
+        service.values().clear(
+            spreadsheetId=DAILY_SHEET_ID,
+            range=f"'{TAB_NAME}'!P3:P200"
+        ).execute()
+        print(f"Cleared col N (rachunki) and col P (notatki) from copied template")
 
         # Set Q11 to red NIEGOTOWE status
         service.values().update(
