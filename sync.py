@@ -21,60 +21,33 @@ SHEET_ID      = os.environ["GOOGLE_SHEET_ID"]
 SHEET_NAME    = "Previo"   # Tab name in Google Sheets
 SERVICE_ACCOUNT_JSON = os.environ["GOOGLE_SERVICE_ACCOUNT"]
 
-# Fetch month by month to overcome 300 limit
-FETCH_START = "2025-01-01"
-FETCH_END   = "2026-12-31" 
+# Fetch last 12 months + next 3 months
+DATE_FROM = (datetime.now() - timedelta(days=365)).strftime("%Y-%m-%d")
+DATE_TO   = (datetime.now() + timedelta(days=90)).strftime("%Y-%m-%d")
 
 # ── FETCH FROM PREVIO ────────────────────────────────────
 def fetch_reservations():
-    import xml.etree.ElementTree as ET2
-    from datetime import date
-    
-    # Fetch month by month to overcome Previo's 300 reservation limit
-    all_rows = []
-    start = date.fromisoformat(FETCH_START)
-    end   = date.fromisoformat(FETCH_END)
-    
-    current = start.replace(day=1)
-    while current <= end:
-        # Last day of month
-        if current.month == 12:
-            next_month = current.replace(year=current.year+1, month=1, day=1)
-        else:
-            next_month = current.replace(month=current.month+1, day=1)
-        month_end = next_month - timedelta(days=1)
-        
-        xml_body = f"""<?xml version="1.0" encoding="utf-8"?>
+    xml_body = f"""<?xml version="1.0" encoding="utf-8"?>
 <request>
   <login>{PREVIO_LOGIN}</login>
   <password>{PREVIO_PASS}</password>
   <hotId>{PREVIO_HOT_ID}</hotId>
   <term>
-    <from>{current.isoformat()}</from>
-    <to>{month_end.isoformat()}</to>
+    <from>{DATE_FROM}</from>
+    <to>{DATE_TO}</to>
     <termType>check-out</termType>
   </term>
   <limit>300</limit>
 </request>"""
-        resp = requests.post(
-            PREVIO_URL,
-            data=xml_body.encode("utf-8"),
-            headers={"Content-Type": "application/xml"},
-            timeout=30
-        )
-        resp.raise_for_status()
-        root = ET2.fromstring(resp.content)
-        month_rows = root.findall(".//reservation")
-        all_rows.extend(month_rows)
-        print(f"  {current.strftime('%Y-%m')}: {len(month_rows)} reservations")
-        
-        current = next_month
     
-    print(f"Total: {len(all_rows)} reservations")
-    combined = ET2.Element("reservations")
-    for r in all_rows:
-        combined.append(r)
-    return ET2.tostring(combined, encoding="utf-8")
+    resp = requests.post(
+        PREVIO_URL,
+        data=xml_body.encode("utf-8"),
+        headers={"Content-Type": "application/xml"},
+        timeout=30
+    )
+    resp.raise_for_status()
+    return resp.content
 
 def parse_reservations(xml_bytes):
     root = ET.fromstring(xml_bytes)
@@ -98,10 +71,12 @@ def parse_reservations(xml_bytes):
         elif "profitroom" in note_lower:
             channel = "Profitroom"
         
-        # Parse dates
-        date_from = t("term/from")[:10] if t("term/from") else ""
-        date_to   = t("term/to")[:10]   if t("term/to")   else ""
-        
+        # Parse dates — zachowaj pełny datetime z godziną
+        date_from_full = t("term/from")[:16] if t("term/from") else ""  # YYYY-MM-DD HH:MM
+        date_to_full   = t("term/to")[:16]   if t("term/to")   else ""
+        date_from      = date_from_full[:10]  # tylko data do filtrowania
+        date_to        = date_to_full[:10]
+
         # Calculate nights
         nights = 0
         try:
@@ -111,12 +86,14 @@ def parse_reservations(xml_bytes):
         except:
             pass
         
+        company_name = t("company/name").strip()
+
         rows.append([
             t("resId"),                          # A: ID rezerwacji
             t("voucher"),                        # B: Numer voucher
             t("created")[:10],                   # C: Data rezerwacji
-            date_from,                           # D: Data od
-            date_to,                             # E: Data do
+            date_from_full,                      # D: Data od (z godziną)
+            date_to_full,                        # E: Data do (z godziną)
             nights,                              # F: Liczba nocy
             t("object/name"),                    # G: Apartament
             channel,                             # H: Kanał
@@ -126,7 +103,8 @@ def parse_reservations(xml_bytes):
             t("guest/name"),                     # L: Gość
             t("guest/countryCode"),              # M: Kraj
             t("contactPerson/phone"),            # N: Telefon
-            datetime.now().strftime("%Y-%m-%d %H:%M"),  # O: Ostatnia aktualizacja
+            company_name,                        # O: Firma (np. Kasuj)
+            datetime.now().strftime("%Y-%m-%d %H:%M"),  # P: Ostatnia aktualizacja
         ])
     
     return rows
@@ -157,13 +135,13 @@ def write_to_sheets(service, rows):
     headers = [
         "ID Rezerwacji", "Voucher", "Data rezerwacji", "Data od", "Data do",
         "Noce", "Apartament", "Kanał", "Cena", "Waluta", "Status",
-        "Gość", "Kraj", "Telefon", "Ostatnia aktualizacja"
+        "Gość", "Kraj", "Telefon", "Firma", "Ostatnia aktualizacja"
     ]
     
     # Clear and rewrite
     service.values().clear(
         spreadsheetId=SHEET_ID,
-        range=f"{SHEET_NAME}!A:O"
+        range=f"{SHEET_NAME}!A:P"
     ).execute()
     
     service.values().update(
@@ -177,7 +155,7 @@ def write_to_sheets(service, rows):
 
 # ── MAIN ─────────────────────────────────────────────────
 def main():
-    print(f"Fetching reservations {FETCH_START} - {FETCH_END} month by month...")
+    print(f"Fetching reservations {DATE_FROM} - {DATE_TO}...")
     
     xml_data = fetch_reservations()
     rows = parse_reservations(xml_data)
