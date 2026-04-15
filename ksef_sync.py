@@ -118,7 +118,7 @@ def ksef_get_invoice_xml(access_token, ksef_number):
             ksef_number,
             access_token=access_token,
         )
-        return result.data if hasattr(result, 'data') else bytes(result)
+        return result.content
 
 
 def parse_invoice_xml(xml_bytes):
@@ -249,7 +249,8 @@ def write_to_sheets(rows_data):
 
     rows = [header_row] + rows_data
 
-    enc_range = requests.utils.quote(f"{SHEET_NAME}!A1:K2000")
+    sheet_range = f"'{SHEET_NAME}'!A1:K2000"
+    enc_range = requests.utils.quote(sheet_range)
     requests.delete(
         f"https://sheets.googleapis.com/v4/spreadsheets/{SPREADSHEET_ID}/values/{enc_range}",
         headers=hdrs
@@ -258,7 +259,7 @@ def write_to_sheets(rows_data):
         f"https://sheets.googleapis.com/v4/spreadsheets/{SPREADSHEET_ID}/values/{enc_range}",
         headers=hdrs,
         params={"valueInputOption": "RAW"},
-        json={"range": f"{SHEET_NAME}!A1", "values": rows}
+        json={"range": sheet_range, "values": rows}
     )
     resp.raise_for_status()
     print(f"✅ Zapisano {len(rows_data)} faktur do arkusza '{SHEET_NAME}'")
@@ -305,6 +306,7 @@ def main():
             parsed = {}
             if ksef_number:
                 try:
+                    import time; time.sleep(0.5)
                     xml_bytes = ksef_get_invoice_xml(access_token, ksef_number)
                     parsed = parse_invoice_xml(xml_bytes)
                 except Exception as e:
