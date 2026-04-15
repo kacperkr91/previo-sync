@@ -148,34 +148,36 @@ def parse_invoice_xml(xml_bytes):
 
     # Sprzedawca (Podmiot1)
     sprzedawca_nip   = find(".//fa:Podmiot1/fa:DaneIdentyfikacyjne/fa:NIP")
-    sprzedawca_nazwa = find(".//fa:Podmiot1/fa:DaneIdentyfikacyjne/fa:PelnaNazwa") or                        find(".//fa:Podmiot1/fa:DaneIdentyfikacyjne/fa:Nazwa")
+    sprzedawca_nazwa = (find(".//fa:Podmiot1/fa:DaneIdentyfikacyjne/fa:PelnaNazwa") or
+                        find(".//fa:Podmiot1/fa:DaneIdentyfikacyjne/fa:Nazwa"))
 
-    # Daty i kwoty z sekcji Fa
-    p1    = find(".//fa:Fa/fa:P1")
-    p15   = find(".//fa:Fa/fa:P15")
-    p16   = find(".//fa:Fa/fa:P16")
-    p8a   = find(".//fa:Fa/fa:P8A")
+    # FA(3) używa P_1, P_15 itp. (z podkreślnikiem), FA(2) bez podkreślnika
+    p1   = find(".//fa:Fa/fa:P_1")   or find(".//fa:Fa/fa:P1")
+    p15  = find(".//fa:Fa/fa:P_15")  or find(".//fa:Fa/fa:P15")
+    p16  = find(".//fa:Fa/fa:P_16")  or find(".//fa:Fa/fa:P16")
+    p13  = find(".//fa:Fa/fa:P_13_1") or find(".//fa:Fa/fa:P13_1")
 
-    # Termin płatności — FA(3): Fa/Platnosc/TerminPlatnosci/Termin
+    # Termin płatności — szukamy Platnosc/TerminPlatnosci/Termin
     termin = find(".//fa:Fa/fa:Platnosc/fa:TerminPlatnosci/fa:Termin")
-    # Fallback: szukaj wszystkich <Termin> w dokumencie
     if not termin:
+        # Szukaj <Termin> gdziekolwiek — tylko wartości w formacie daty
         for el in root.iter(f"{prefix}Termin"):
             if el.text and el.text.strip():
-                termin = el.text.strip()
-                break
-    # Fallback FA(2): P22
+                val = el.text.strip()
+                if len(val) >= 10 and val[4] == "-" and val[7] == "-":
+                    termin = val
+                    break
     if not termin:
-        termin = find(".//fa:Fa/fa:P22")
+        termin = find(".//fa:Fa/fa:P_22") or find(".//fa:Fa/fa:P22")
 
     return {
         "data_wystawienia": p1,
         "sprzedawca_nip":   sprzedawca_nip,
         "sprzedawca_nazwa": sprzedawca_nazwa,
         "termin_platnosci": termin,
-        "netto":  p15,
+        "netto":  p13 or p15,
         "vat":    p16,
-        "brutto": p8a or p15,
+        "brutto": p15,
     }
 
 
