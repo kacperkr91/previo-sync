@@ -49,7 +49,7 @@ def ksef_get_access_token():
 
     # Krok 1 — pobierz challenge i klucz publiczny
     r1 = requests.post(f"{KSEF_API_BASE}/auth/challenge", json={
-        "contextIdentifier": {"type": "nip", "identifier": NIP}
+        "contextIdentifier": {"type": "nip", "value": NIP}
     })
     r1.raise_for_status()
     data1 = r1.json()
@@ -109,7 +109,7 @@ def ksef_get_access_token():
 
     # Krok 3 — wyślij zaszyfrowany token + challenge
     r2 = requests.post(f"{KSEF_API_BASE}/auth/ksef-token", json={
-        "contextIdentifier": {"type": "nip", "identifier": NIP},
+        "contextIdentifier": {"type": "nip", "value": NIP},
         "challenge": challenge,
         "encryptedToken": encrypted_token_b64
     })
