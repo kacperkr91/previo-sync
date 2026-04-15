@@ -124,69 +124,39 @@ def ksef_get_invoice_xml(access_token, ksef_number):
 def parse_invoice_xml(xml_bytes):
     """
     Parsuje XML FA(2)/FA(3) i wyciąga kluczowe pola.
-    Zwraca słownik z danymi faktury.
+    Używa iteracji po lokalnych nazwach elementów (bez namespace).
     """
     try:
         root = ET.fromstring(xml_bytes)
     except ET.ParseError:
         return {}
 
-    ns = {
-        'fa': 'http://crd.gov.pl/wzor/2023/06/29/9781/',
-        'fa2': 'http://crd.gov.pl/wzor/2021/08/06/11089/',
-    }
+    # Słownik local_name -> text dla wszystkich elementów
+    elements = {}
+    for el in root.iter():
+        local = el.tag.split('}')[1] if '}' in el.tag else el.tag
+        if el.text and el.text.strip() and local not in elements:
+            elements[local] = el.text.strip()
 
-    def find_text(xpath_list):
-        for xp in xpath_list:
-            for prefix, uri in ns.items():
-                try:
-                    el = root.find(xp.replace('{ns}', f'{{{uri}}}'))
-                    if el is not None and el.text:
-                        return el.text.strip()
-                except Exception:
-                    pass
-        return ""
-
-    # Sprzedawca
-    sprzedawca_nip = find_text([
-        './/{ns}Podmiot1/{ns}DaneIdentyfikacyjne/{ns}NIP',
-        './/{ns}P1/{ns}NIP',
-    ])
-    sprzedawca_nazwa = find_text([
-        './/{ns}Podmiot1/{ns}DaneIdentyfikacyjne/{ns}PelnaNazwa',
-        './/{ns}Podmiot1/{ns}DaneIdentyfikacyjne/{ns}Nazwa',
-    ])
-
-    # Daty
-    data_wystawienia = find_text([
-        './/{ns}Fa/{ns}P1',
-        './/{ns}P1',
-    ])
-
-    # Termin płatności — może być wiele, bierzemy pierwszy
-    termin = find_text([
-        './/{ns}Platnosc/{ns}TerminPlatnosci',
-        './/{ns}P22',
-    ])
-
-    # Kwoty
-    netto = find_text(['.//{ns}P15'])
-    vat   = find_text(['.//{ns}P16'])
-    brutto_candidates = [
-        './/{ns}Fa/{ns}P15',
-        './/{ns}P8A',
-        './/{ns}WartoscFaktury',
-    ]
-    brutto = find_text(brutto_candidates)
+    # Termin płatności — w FA(3) jest <Termin> wewnątrz <TerminPlatnosci>
+    # Szukamy pierwszego wystąpienia <Termin> lub <TerminPlatnosci>/<P22>
+    termin = ""
+    for el in root.iter():
+        local = el.tag.split('}')[1] if '}' in el.tag else el.tag
+        if local == "Termin" and el.text and el.text.strip():
+            termin = el.text.strip()
+            break
+    if not termin:
+        termin = elements.get("P22", "")
 
     return {
-        "data_wystawienia": data_wystawienia,
-        "sprzedawca_nip": sprzedawca_nip,
-        "sprzedawca_nazwa": sprzedawca_nazwa,
+        "data_wystawienia": elements.get("P1", ""),
+        "sprzedawca_nip":   elements.get("NIP", ""),
+        "sprzedawca_nazwa": elements.get("PelnaNazwa", elements.get("Nazwa", "")),
         "termin_platnosci": termin,
-        "netto": netto,
-        "vat": vat,
-        "brutto": brutto,
+        "netto":  elements.get("P15", ""),
+        "vat":    elements.get("P16", ""),
+        "brutto": elements.get("P8A", elements.get("WartoscFaktury", elements.get("P15", ""))),
     }
 
 
