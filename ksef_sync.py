@@ -92,7 +92,7 @@ def ksef_query_invoices(access_token, date_from=None, date_to=None):
     with KsefClient(KsefClientOptions(base_url=KsefEnvironment.PROD.value)) as client:
         while True:
             resp = client.invoices.query_invoice_metadata_by_date_range(
-                subject_type=InvoiceQuerySubjectType.SUBJECT3,  # jako nabywca
+                subject_type=InvoiceQuerySubjectType.SUBJECT2,  # jako nabywca
                 date_type=InvoiceQueryDateType.ISSUE,
                 date_from=date_from,
                 date_to=date_to,
@@ -343,6 +343,10 @@ def main():
                 alert,
                 datetime.now().strftime("%Y-%m-%d %H:%M"),
             ])
+
+        if not rows:
+            print("Brak faktur zakupowych — nic do zapisania.")
+            return
 
         # Sortuj po terminie płatności
         rows.sort(key=lambda r: str(r[7]) if r[7] else "9999")
