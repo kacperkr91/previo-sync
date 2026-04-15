@@ -35,20 +35,30 @@ ALERT_DAYS           = 7   # alert jeśli termin płatności za mniej niż 7 dni
 # ── KSEF AUTH ────────────────────────────────────────────────────────────────
 def ksef_get_access_token():
     """
-    Autoryzacja KSeF 2.0 przez oficjalne SDK ksef2.
+    Autoryzacja KSeF 2.0 przez ksef-client SDK.
+    pip install ksef-client
     """
     try:
-        from ksef2 import Client
+        from ksef_client import KsefClient, KsefClientOptions, KsefEnvironment, models as m
+        from ksef_client.services import AuthCoordinator
     except ImportError:
-        raise ImportError("Zainstaluj: pip install ksef2")
+        raise ImportError("Zainstaluj: pip install ksef-client")
 
-    client = Client()  # domyślnie produkcja
-    auth = client.auth.authenticate_token(
-        ksef_token=KSEF_TOKEN,
-        nip=NIP,
-    )
-    print("AccessToken uzyskany przez ksef2 SDK.")
-    return auth.access_token
+    options = KsefClientOptions(base_url=KsefEnvironment.PRODUCTION.value)
+    with KsefClient(options) as client:
+        # Pobierz certyfikat do szyfrowania tokenu
+        token_cert_pem = client.security.get_public_key_certificate_pem(
+            m.PublicKeyCertificateUsage.KSEFTOKENENCRYPTION,
+        )
+        auth = AuthCoordinator(client.auth).authenticate_with_ksef_token(
+            token=KSEF_TOKEN,
+            public_certificate=token_cert_pem,
+            context_identifier_type="nip",
+            context_identifier_value=NIP,
+        )
+        access_token = auth.access_token
+        print("AccessToken uzyskany przez ksef-client SDK.")
+        return access_token
 
 
 def ksef_terminate_session(access_token):
