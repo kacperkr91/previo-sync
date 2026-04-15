@@ -49,30 +49,42 @@ def ksef_get_access_token():
 
     # Krok 1 — pobierz challenge i klucz publiczny
     r1 = requests.post(f"{KSEF_API_BASE}/auth/challenge", json={
-        "contextIdentifier": {"type": "onip", "identifier": NIP}
+        "contextIdentifier": {"type": "nip", "identifier": NIP}
     })
     r1.raise_for_status()
     data1 = r1.json()
     challenge = data1["challenge"]
     print(f"Challenge: {challenge[:20]}...")
 
-    # Krok 2 — pobierz aktualny klucz publiczny KSeF
-    r_cert = requests.get(f"{KSEF_API_BASE}/security/public-key-certificates")
+    # Krok 2 — pobierz klucz publiczny KSeF do szyfrowania tokenów
+    r_cert = requests.get(
+        f"{KSEF_API_BASE}/security/public-key-certificates",
+        params={"usage": "KsefTokenEncryption"}
+    )
     r_cert.raise_for_status()
     certs = r_cert.json()
-    # Pierwszy aktywny certyfikat do szyfrowania tokenów
-    token_cert_b64 = None
-    # API zwraca listę bezpośrednio lub obiekt z kluczem
+    # API zwraca listę bezpośrednio
     cert_list = certs if isinstance(certs, list) else certs.get("certificates", [])
+    token_cert_b64 = None
     for cert in cert_list:
         if isinstance(cert, dict):
-            token_cert_b64 = cert.get("publicKey") or cert.get("certificate") or cert.get("value")
+            # Szukaj pola z certyfikatem (DER base64)
+            token_cert_b64 = (cert.get("certificate") or 
+                              cert.get("publicKey") or 
+                              cert.get("value"))
         else:
             token_cert_b64 = str(cert)
         if token_cert_b64:
             break
-    # Wypisz strukturę dla debugowania
-    print(f"Struktura certs: {str(certs)[:200]}")
+    if not token_cert_b64 and cert_list:
+        # fallback: pierwszy cert bez filtrowania usage
+        r_cert2 = requests.get(f"{KSEF_API_BASE}/security/public-key-certificates")
+        r_cert2.raise_for_status()
+        cert_list2 = r_cert2.json()
+        if isinstance(cert_list2, list) and cert_list2:
+            first = cert_list2[0]
+            token_cert_b64 = first.get("certificate") if isinstance(first, dict) else str(first)
+    print(f"Cert prefix: {str(token_cert_b64)[:40] if token_cert_b64 else 'BRAK'}")
 
     if not token_cert_b64:
         raise ValueError("Nie udało się pobrać klucza publicznego KSeF")
@@ -97,7 +109,7 @@ def ksef_get_access_token():
 
     # Krok 3 — wyślij zaszyfrowany token + challenge
     r2 = requests.post(f"{KSEF_API_BASE}/auth/ksef-token", json={
-        "contextIdentifier": {"type": "onip", "identifier": NIP},
+        "contextIdentifier": {"type": "nip", "identifier": NIP},
         "challenge": challenge,
         "encryptedToken": encrypted_token_b64
     })
