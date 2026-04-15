@@ -121,19 +121,23 @@ def ksef_get_access_token():
 
     # Krok 4 — poczekaj aż autoryzacja zostanie przetworzona (polling statusu)
     import time
-    for attempt in range(10):
+    for attempt in range(15):
         r_status = requests.get(
             f"{KSEF_API_BASE}/auth/{reference_number}"
         )
+        print(f"Auth status HTTP: {r_status.status_code}, body: {r_status.text[:300]}")
         if r_status.ok:
             status_data = r_status.json()
             status_code = status_data.get("status", {}).get("code", 0)
-            print(f"Auth status: {status_code}")
+            print(f"Auth status code: {status_code}")
             if status_code == 200:
                 break
             elif status_code >= 400:
-                raise Exception(f"Autoryzacja nieudana, status: {status_code} — {status_data}")
-        time.sleep(1)
+                raise Exception(f"Autoryzacja nieudana, status: {status_code}")
+        elif r_status.status_code == 404:
+            # Jeszcze nie przetworzone — czekaj
+            pass
+        time.sleep(2)
     else:
         raise Exception("Timeout oczekiwania na autoryzację KSeF")
 
