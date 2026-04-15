@@ -75,52 +75,36 @@ def ksef_terminate_session(access_token):
 # ── POBIERANIE FAKTUR ────────────────────────────────────────────────────────
 def ksef_query_invoices(access_token, date_from=None, date_to=None):
     """
-    Pobiera listę faktur zakupowych (jako nabywca) z KSeF 2.0.
-    Endpoint: POST /api/v2/invoices/query/metadata
+    Pobiera listę faktur zakupowych (jako nabywca) z KSeF 2.0 przez SDK.
     """
+    from ksef_client import KsefClient, KsefClientOptions, KsefEnvironment
+    from ksef_client.models import InvoiceQuerySubjectType, InvoiceQueryDateType
+
     if not date_from:
-        date_from = (date.today() - timedelta(days=60)).strftime("%Y-%m-%dT00:00:00.000Z")
-    else:
-        date_from = date_from + "T00:00:00.000Z"
-
+        date_from = (date.today() - timedelta(days=60)).strftime("%Y-%m-%dT00:00:00")
     if not date_to:
-        date_to = date.today().strftime("%Y-%m-%dT23:59:59.000Z")
-    else:
-        date_to = date_to + "T23:59:59.000Z"
-
-    hdrs = {
-        "Authorization": f"Bearer {access_token}",
-        "Content-Type": "application/json"
-    }
+        date_to = date.today().strftime("%Y-%m-%dT23:59:59")
 
     all_invoices = []
     page_offset = 0
     page_size = 100
 
-    while True:
-        payload = {
-            "dateFrom": date_from,
-            "dateTo": date_to,
-            "subjectType": "BUYER",
-            "pageOffset": page_offset,
-            "pageSize": page_size,
-        }
-
-        r = requests.post(
-            f"{KSEF_API_BASE}/invoices/query/metadata",
-            headers=hdrs, json=payload
-        )
-        if r.status_code == 404:
-            break
-        r.raise_for_status()
-
-        data = r.json()
-        invoices = data.get("invoices", [])
-        all_invoices.extend(invoices)
-
-        if len(invoices) < page_size:
-            break
-        page_offset += page_size
+    with KsefClient(KsefClientOptions(base_url=KsefEnvironment.PROD.value)) as client:
+        while True:
+            resp = client.invoices.query_invoice_metadata_by_date_range(
+                subject_type=InvoiceQuerySubjectType.SUBJECT3,  # jako nabywca
+                date_type=InvoiceQueryDateType.ISSUE,
+                date_from=date_from,
+                date_to=date_to,
+                access_token=access_token,
+                page_offset=page_offset,
+                page_size=page_size,
+            )
+            batch = resp.invoices or []
+            all_invoices.extend(batch)
+            if len(batch) < page_size or not getattr(resp, 'has_more', False):
+                break
+            page_offset += page_size
 
     print(f"Znaleziono {len(all_invoices)} faktur zakupowych")
     return all_invoices
@@ -128,12 +112,13 @@ def ksef_query_invoices(access_token, date_from=None, date_to=None):
 
 def ksef_get_invoice_xml(access_token, ksef_number):
     """Pobiera XML faktury po numerze KSeF 2.0."""
-    r = requests.get(
-        f"{KSEF_API_BASE}/invoices/ksef/{ksef_number}",
-        headers={"Authorization": f"Bearer {access_token}"}
-    )
-    r.raise_for_status()
-    return r.content
+    from ksef_client import KsefClient, KsefClientOptions, KsefEnvironment
+    with KsefClient(KsefClientOptions(base_url=KsefEnvironment.PROD.value)) as client:
+        content = client.invoices.download_invoice(
+            ksef_number=ksef_number,
+            access_token=access_token,
+        )
+        return content.data if hasattr(content, 'data') else bytes(content)
 
 
 def parse_invoice_xml(xml_bytes):
@@ -299,8 +284,22 @@ def main():
         today = date.today()
 
         for inv in invoices:
-            ksef_number = inv.get("ksefReferenceNumber") or inv.get("ksefNumber", "")
-            inv_date    = (inv.get("invoiceDate") or inv.get("issueDate", ""))[:10] if inv.get("invoiceDate") else ""
+            # Obsługa zarówno SDK dataclass jak i dict
+            if hasattr(inv, 'ksef_number'):
+                ksef_number = inv.ksef_number or ""
+                inv_date    = (inv.issue_date or "")[:10]
+                brutto_meta = inv.gross_amount or ""
+                netto_meta  = inv.net_amount or ""
+                seller_obj  = getattr(inv, 'seller', None)
+                sprzedawca_meta = getattr(seller_obj, 'name', "") if seller_obj else ""
+                nip_meta    = getattr(seller_obj, 'nip', "") if seller_obj else ""
+            else:
+                ksef_number = inv.get("ksefReferenceNumber") or inv.get("ksefNumber", "")
+                inv_date    = (inv.get("issueDate") or inv.get("invoiceDate") or "")[:10]
+                brutto_meta = inv.get("grossValue", "") or inv.get("gross_amount", "")
+                netto_meta  = inv.get("netAmount", "") or inv.get("net_amount", "")
+                sprzedawca_meta = inv.get("subjectName", "")
+                nip_meta    = ""
 
             # Pobierz XML dla szczegółów (termin płatności, kwoty, sprzedawca)
             parsed = {}
@@ -311,11 +310,11 @@ def main():
                 except Exception as e:
                     print(f"⚠️ Błąd pobierania XML dla {ksef_number}: {e}")
 
-            sprzedawca   = parsed.get("sprzedawca_nazwa") or inv.get("subjectName", "")
-            nip_sp       = parsed.get("sprzedawca_nip", "")
-            netto        = parsed.get("netto", "")
+            sprzedawca   = parsed.get("sprzedawca_nazwa") or sprzedawca_meta
+            nip_sp       = parsed.get("sprzedawca_nip", "") or nip_meta
+            netto        = parsed.get("netto", "") or netto_meta
             vat          = parsed.get("vat", "")
-            brutto       = parsed.get("brutto", "") or inv.get("grossValue", "")
+            brutto       = parsed.get("brutto", "") or brutto_meta
             termin_str   = parsed.get("termin_platnosci", "")
 
             # Oblicz dni do płatności
