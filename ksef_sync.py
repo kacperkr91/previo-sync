@@ -114,11 +114,11 @@ def ksef_get_invoice_xml(access_token, ksef_number):
     """Pobiera XML faktury po numerze KSeF 2.0."""
     from ksef_client import KsefClient, KsefClientOptions, KsefEnvironment
     with KsefClient(KsefClientOptions(base_url=KsefEnvironment.PROD.value)) as client:
-        content = client.invoices.download_invoice(
-            ksef_number=ksef_number,
+        result = client.invoices.get_invoice_bytes(
+            ksef_number,
             access_token=access_token,
         )
-        return content.data if hasattr(content, 'data') else bytes(content)
+        return result.data if hasattr(result, 'data') else bytes(result)
 
 
 def parse_invoice_xml(xml_bytes):
@@ -249,7 +249,7 @@ def write_to_sheets(rows_data):
 
     rows = [header_row] + rows_data
 
-    enc_range = requests.utils.quote(f"'{SHEET_NAME}'!A1:K2000")
+    enc_range = requests.utils.quote(f"{SHEET_NAME}!A1:K2000")
     requests.delete(
         f"https://sheets.googleapis.com/v4/spreadsheets/{SPREADSHEET_ID}/values/{enc_range}",
         headers=hdrs
@@ -258,7 +258,7 @@ def write_to_sheets(rows_data):
         f"https://sheets.googleapis.com/v4/spreadsheets/{SPREADSHEET_ID}/values/{enc_range}",
         headers=hdrs,
         params={"valueInputOption": "RAW"},
-        json={"range": f"'{SHEET_NAME}'!A1", "values": rows}
+        json={"range": f"{SHEET_NAME}!A1", "values": rows}
     )
     resp.raise_for_status()
     print(f"✅ Zapisano {len(rows_data)} faktur do arkusza '{SHEET_NAME}'")
