@@ -62,13 +62,17 @@ def ksef_get_access_token():
     certs = r_cert.json()
     # Pierwszy aktywny certyfikat do szyfrowania tokenów
     token_cert_b64 = None
-    for cert in certs.get("certificates", certs if isinstance(certs, list) else []):
+    # API zwraca listę bezpośrednio lub obiekt z kluczem
+    cert_list = certs if isinstance(certs, list) else certs.get("certificates", [])
+    for cert in cert_list:
         if isinstance(cert, dict):
             token_cert_b64 = cert.get("publicKey") or cert.get("certificate") or cert.get("value")
         else:
-            token_cert_b64 = cert
+            token_cert_b64 = str(cert)
         if token_cert_b64:
             break
+    # Wypisz strukturę dla debugowania
+    print(f"Struktura certs: {str(certs)[:200]}")
 
     if not token_cert_b64:
         raise ValueError("Nie udało się pobrać klucza publicznego KSeF")
