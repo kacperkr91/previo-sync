@@ -1,0 +1,31 @@
+name: KSeF Sync
+
+on:
+  schedule:
+    - cron: '0 6 * * *'   # codziennie o 6:00 UTC (8:00 Warsaw)
+  workflow_dispatch:        # możliwość ręcznego uruchomienia
+
+jobs:
+  ksef-sync:
+    runs-on: ubuntu-latest
+    env:
+      TZ: Europe/Warsaw
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install requests cryptography
+
+      - name: Run KSeF sync
+        env:
+          KSEF_TOKEN:          ${{ secrets.KSEF_TOKEN }}
+          KSEF_SPREADSHEET_ID: ${{ secrets.KSEF_SPREADSHEET_ID }}
+          GS_SA_JSON_B64:      ${{ secrets.GS_SA_JSON_B64 }}
+        run: python ksef_sync.py
