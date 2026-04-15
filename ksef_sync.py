@@ -44,7 +44,7 @@ def ksef_get_access_token():
     except ImportError:
         raise ImportError("Zainstaluj: pip install ksef-client")
 
-    options = KsefClientOptions(base_url=KsefEnvironment.PRODUCTION.value)
+    options = KsefClientOptions(base_url=KsefEnvironment.PROD.value)
     with KsefClient(options) as client:
         # Pobierz certyfikat do szyfrowania tokenu
         token_cert_pem = client.security.get_public_key_certificate_pem(
