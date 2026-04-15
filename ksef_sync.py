@@ -24,8 +24,8 @@ from datetime import datetime, date, timedelta
 
 # ── CONFIG ──────────────────────────────────────────────────────────────────
 NIP                  = "6793324449"
-KSEF_API_BASE        = "https://ksef.mf.gov.pl/api"          # produkcja
-# KSEF_API_BASE      = "https://ksef-test.mf.gov.pl/api"     # test
+KSEF_API_BASE        = "https://ksef.mf.gov.pl/api/v2"       # produkcja KSeF 2.0
+# KSEF_API_BASE      = "https://ksef-test.mf.gov.pl/api/v2"  # test
 SHEET_NAME           = "KSeF"
 SPREADSHEET_ID       = os.environ["KSEF_SPREADSHEET_ID"]
 KSEF_TOKEN           = os.environ["KSEF_TOKEN"]
@@ -33,110 +33,114 @@ GS_SA_JSON_B64       = os.environ.get("GS_SA_JSON_B64", "")
 ALERT_DAYS           = 7   # alert jeśli termin płatności za mniej niż 7 dni
 
 # ── KSEF AUTH ────────────────────────────────────────────────────────────────
-def ksef_get_session_token():
+def ksef_get_access_token():
     """
-    Inicjuje sesję interaktywną KSeF tokenem API.
-    Zwraca sessionToken do dalszych zapytań.
+    Autoryzacja KSeF 2.0 tokenem API — flow 3-etapowy:
+    1. POST /auth/challenge  → challenge
+    2. POST /auth/ksef-token → authenticationToken + referenceNumber
+    3. POST /auth/token/redeem → accessToken (JWT)
     """
-    url = f"{KSEF_API_BASE}/online/Session/AuthorisationChallenge"
-    r = requests.post(url, json={
-        "contextIdentifier": {
-            "type": "onip",
-            "identifier": NIP
-        }
+    # Krok 1 — pobierz challenge
+    r1 = requests.post(f"{KSEF_API_BASE}/auth/challenge", json={
+        "contextIdentifier": {"type": "onip", "identifier": NIP}
     })
-    r.raise_for_status()
-    challenge = r.json()["challenge"]
-    timestamp = r.json()["timestamp"]
+    r1.raise_for_status()
+    challenge = r1.json()["challenge"]
+    print(f"Challenge: {challenge[:20]}...")
 
-    # Podpisz token + challenge
-    # Format: token|challenge (base64 z SHA256? Nie — KSeF token API = gotowy bearer)
-    # Dla tokenu API z KSeF 2.0 używamy endpointu Token (nie Interactive)
-    # Sesja tokenem:
-    url2 = f"{KSEF_API_BASE}/online/Session/AuthorisationToken"
-    r2 = requests.post(url2, json={
-        "contextIdentifier": {
-            "type": "onip",
-            "identifier": NIP
-        },
-        "queryElement": challenge,
+    # Krok 2 — wyślij token KSeF + challenge
+    r2 = requests.post(f"{KSEF_API_BASE}/auth/ksef-token", json={
+        "contextIdentifier": {"type": "onip", "identifier": NIP},
+        "challenge": challenge,
         "token": KSEF_TOKEN
     })
     r2.raise_for_status()
-    return r2.json()["sessionToken"]["token"]
+    reference_number = r2.json()["referenceNumber"]
+    print(f"ReferenceNumber: {reference_number}")
+
+    # Krok 3 — wymień na accessToken JWT
+    r3 = requests.post(f"{KSEF_API_BASE}/auth/token/redeem", json={
+        "referenceNumber": reference_number
+    })
+    r3.raise_for_status()
+    access_token = r3.json()["accessToken"]
+    print("AccessToken uzyskany.")
+    return access_token
 
 
-def ksef_terminate_session(session_token):
-    """Zamknij sesję KSeF."""
+def ksef_terminate_session(access_token):
+    """Wyloguj z KSeF."""
     try:
-        requests.get(
-            f"{KSEF_API_BASE}/online/Session/Terminate",
-            headers={"SessionToken": session_token}
+        requests.delete(
+            f"{KSEF_API_BASE}/auth/session",
+            headers={"Authorization": f"Bearer {access_token}"}
         )
     except Exception:
         pass
 
 
 # ── POBIERANIE FAKTUR ────────────────────────────────────────────────────────
-def ksef_query_invoices(session_token, date_from=None, date_to=None):
+def ksef_query_invoices(access_token, date_from=None, date_to=None):
     """
-    Pobiera listę faktur zakupowych (jako nabywca) z KSeF.
-    date_from, date_to: str w formacie 'YYYY-MM-DD'
-    Zwraca listę słowników z danymi faktury.
+    Pobiera listę faktur zakupowych (jako nabywca) z KSeF 2.0.
+    Endpoint: POST /api/v2/invoices/query/metadata
     """
     if not date_from:
-        # Domyślnie ostatnie 30 dni
-        date_from = (date.today() - timedelta(days=30)).strftime("%Y-%m-%dT00:00:00")
+        date_from = (date.today() - timedelta(days=60)).strftime("%Y-%m-%dT00:00:00.000Z")
     else:
-        date_from = date_from + "T00:00:00"
+        date_from = date_from + "T00:00:00.000Z"
 
     if not date_to:
-        date_to = date.today().strftime("%Y-%m-%dT23:59:59")
+        date_to = date.today().strftime("%Y-%m-%dT23:59:59.000Z")
     else:
-        date_to = date_to + "T23:59:59"
+        date_to = date_to + "T23:59:59.000Z"
 
-    url = f"{KSEF_API_BASE}/online/Invoice/GetForBuyer"
-    headers = {"SessionToken": session_token, "Content-Type": "application/json"}
+    hdrs = {
+        "Authorization": f"Bearer {access_token}",
+        "Content-Type": "application/json"
+    }
 
     all_invoices = []
-    page = 0
+    page_offset = 0
     page_size = 100
 
     while True:
         payload = {
-            "queryCriteria": {
-                "acquisitionTimestampThresholdFrom": date_from,
-                "acquisitionTimestampThresholdTo": date_to,
-                "subjectType": "subject3",   # jako nabywca
-                "type": "incremental"
-            },
-            "pageOffset": page,
-            "pageSize": page_size
+            "dateFrom": date_from,
+            "dateTo": date_to,
+            "subjectType": "BUYER",
+            "pageOffset": page_offset,
+            "pageSize": page_size,
         }
 
-        r = requests.post(url, headers=headers, json=payload)
+        r = requests.post(
+            f"{KSEF_API_BASE}/invoices/query/metadata",
+            headers=hdrs, json=payload
+        )
         if r.status_code == 404:
-            break  # brak wyników
+            break
         r.raise_for_status()
 
         data = r.json()
-        invoices = data.get("invoiceHeaderList", [])
+        invoices = data.get("invoices", [])
         all_invoices.extend(invoices)
 
         if len(invoices) < page_size:
             break
-        page += page_size
+        page_offset += page_size
 
     print(f"Znaleziono {len(all_invoices)} faktur zakupowych")
     return all_invoices
 
 
-def ksef_get_invoice_xml(session_token, ksef_number):
-    """Pobiera XML faktury po numerze KSeF."""
-    url = f"{KSEF_API_BASE}/online/Invoice/Get/{ksef_number}"
-    r = requests.get(url, headers={"SessionToken": session_token})
+def ksef_get_invoice_xml(access_token, ksef_number):
+    """Pobiera XML faktury po numerze KSeF 2.0."""
+    r = requests.get(
+        f"{KSEF_API_BASE}/invoices/ksef/{ksef_number}",
+        headers={"Authorization": f"Bearer {access_token}"}
+    )
     r.raise_for_status()
-    return r.content  # bytes (XML)
+    return r.content
 
 
 def parse_invoice_xml(xml_bytes):
@@ -290,26 +294,26 @@ def main():
 
     # Sesja KSeF
     print("Inicjowanie sesji KSeF...")
-    session_token = ksef_get_session_token()
+    access_token = ksef_get_access_token()
     print("Sesja aktywna.")
 
     try:
         # Pobierz faktury (ostatnie 60 dni żeby nie ominąć niczego)
         date_from = (date.today() - timedelta(days=60)).strftime("%Y-%m-%d")
-        invoices = ksef_query_invoices(session_token, date_from=date_from)
+        invoices = ksef_query_invoices(access_token, date_from=date_from)
 
         rows = []
         today = date.today()
 
         for inv in invoices:
-            ksef_number = inv.get("ksefReferenceNumber", "")
-            inv_date    = inv.get("invoiceDate", "")[:10] if inv.get("invoiceDate") else ""
+            ksef_number = inv.get("ksefReferenceNumber") or inv.get("ksefNumber", "")
+            inv_date    = (inv.get("invoiceDate") or inv.get("issueDate", ""))[:10] if inv.get("invoiceDate") else ""
 
             # Pobierz XML dla szczegółów (termin płatności, kwoty, sprzedawca)
             parsed = {}
             if ksef_number:
                 try:
-                    xml_bytes = ksef_get_invoice_xml(session_token, ksef_number)
+                    xml_bytes = ksef_get_invoice_xml(access_token, ksef_number)
                     parsed = parse_invoice_xml(xml_bytes)
                 except Exception as e:
                     print(f"⚠️ Błąd pobierania XML dla {ksef_number}: {e}")
@@ -360,7 +364,7 @@ def main():
         write_to_sheets(rows)
 
     finally:
-        ksef_terminate_session(session_token)
+        ksef_terminate_session(access_token)
         print("Sesja KSeF zamknięta.")
 
 
