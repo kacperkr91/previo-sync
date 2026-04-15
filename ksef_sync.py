@@ -119,34 +119,16 @@ def ksef_get_access_token():
     reference_number = r2.json()["referenceNumber"]
     print(f"ReferenceNumber: {reference_number}")
 
-    # Krok 4 — poczekaj aż autoryzacja zostanie przetworzona (polling statusu)
+    # Krok 4 — wymień referenceNumber na accessToken JWT
+    # Zgodnie z dokumentacją KSeF 2.0 redeem wywołujemy od razu po ksef-token
     import time
-    for attempt in range(15):
-        r_status = requests.get(
-            f"{KSEF_API_BASE}/auth/{reference_number}"
-        )
-        print(f"Auth status HTTP: {r_status.status_code}, body: {r_status.text[:300]}")
-        if r_status.ok:
-            status_data = r_status.json()
-            status_code = status_data.get("status", {}).get("code", 0)
-            print(f"Auth status code: {status_code}")
-            if status_code == 200:
-                break
-            elif status_code >= 400:
-                raise Exception(f"Autoryzacja nieudana, status: {status_code}")
-        elif r_status.status_code == 404:
-            # Jeszcze nie przetworzone — czekaj
-            pass
-        time.sleep(2)
-    else:
-        raise Exception("Timeout oczekiwania na autoryzację KSeF")
-
-    # Krok 5 — wymień na accessToken JWT
-    r3 = requests.post(f"{KSEF_API_BASE}/auth/token/redeem", json={
-        "referenceNumber": reference_number
-    })
-    if not r3.ok:
-        print(f"redeem error {r3.status_code}: {r3.text[:300]}")
+    time.sleep(2)  # krótkie oczekiwanie na przetworzenie
+    r3 = requests.post(
+        f"{KSEF_API_BASE}/auth/token/redeem",
+        json={"referenceNumber": reference_number},
+        headers={"Content-Type": "application/json"}
+    )
+    print(f"Redeem status: {r3.status_code}, body: {r3.text[:400]}")
     r3.raise_for_status()
     access_token = r3.json()["accessToken"]
     print("AccessToken uzyskany.")
