@@ -124,39 +124,58 @@ def ksef_get_invoice_xml(access_token, ksef_number):
 def parse_invoice_xml(xml_bytes):
     """
     Parsuje XML FA(2)/FA(3) i wyciąga kluczowe pola.
-    Używa iteracji po lokalnych nazwach elementów (bez namespace).
+    Obsługuje namespace FA(3) i FA(2).
     """
     try:
         root = ET.fromstring(xml_bytes)
     except ET.ParseError:
         return {}
 
-    # Słownik local_name -> text dla wszystkich elementów
-    elements = {}
-    for el in root.iter():
-        local = el.tag.split('}')[1] if '}' in el.tag else el.tag
-        if el.text and el.text.strip() and local not in elements:
-            elements[local] = el.text.strip()
+    # Wykryj namespace
+    ns_uri = root.tag.split('}')[0].strip('{') if '}' in root.tag else ""
+    ns = {"fa": ns_uri} if ns_uri else {}
+    prefix = f"{{{ns_uri}}}" if ns_uri else ""
 
-    # Termin płatności — w FA(3) jest <Termin> wewnątrz <TerminPlatnosci>
-    # Szukamy pierwszego wystąpienia <Termin> lub <TerminPlatnosci>/<P22>
-    termin = ""
-    for el in root.iter():
-        local = el.tag.split('}')[1] if '}' in el.tag else el.tag
-        if local == "Termin" and el.text and el.text.strip():
-            termin = el.text.strip()
-            break
+    def find(path):
+        """Szukaj przez XPath z namespace."""
+        try:
+            el = root.find(path.replace("fa:", prefix), {})
+            if el is not None and el.text:
+                return el.text.strip()
+        except Exception:
+            pass
+        return ""
+
+    # Sprzedawca (Podmiot1)
+    sprzedawca_nip   = find(".//fa:Podmiot1/fa:DaneIdentyfikacyjne/fa:NIP")
+    sprzedawca_nazwa = find(".//fa:Podmiot1/fa:DaneIdentyfikacyjne/fa:PelnaNazwa") or                        find(".//fa:Podmiot1/fa:DaneIdentyfikacyjne/fa:Nazwa")
+
+    # Daty i kwoty z sekcji Fa
+    p1    = find(".//fa:Fa/fa:P1")
+    p15   = find(".//fa:Fa/fa:P15")
+    p16   = find(".//fa:Fa/fa:P16")
+    p8a   = find(".//fa:Fa/fa:P8A")
+
+    # Termin płatności — FA(3): Fa/Platnosc/TerminPlatnosci/Termin
+    termin = find(".//fa:Fa/fa:Platnosc/fa:TerminPlatnosci/fa:Termin")
+    # Fallback: szukaj wszystkich <Termin> w dokumencie
     if not termin:
-        termin = elements.get("P22", "")
+        for el in root.iter(f"{prefix}Termin"):
+            if el.text and el.text.strip():
+                termin = el.text.strip()
+                break
+    # Fallback FA(2): P22
+    if not termin:
+        termin = find(".//fa:Fa/fa:P22")
 
     return {
-        "data_wystawienia": elements.get("P1", ""),
-        "sprzedawca_nip":   elements.get("NIP", ""),
-        "sprzedawca_nazwa": elements.get("PelnaNazwa", elements.get("Nazwa", "")),
+        "data_wystawienia": p1,
+        "sprzedawca_nip":   sprzedawca_nip,
+        "sprzedawca_nazwa": sprzedawca_nazwa,
         "termin_platnosci": termin,
-        "netto":  elements.get("P15", ""),
-        "vat":    elements.get("P16", ""),
-        "brutto": elements.get("P8A", elements.get("WartoscFaktury", elements.get("P15", ""))),
+        "netto":  p15,
+        "vat":    p16,
+        "brutto": p8a or p15,
     }
 
 
