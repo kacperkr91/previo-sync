@@ -24,8 +24,8 @@ from datetime import datetime, date, timedelta
 
 # ── CONFIG ──────────────────────────────────────────────────────────────────
 NIP                  = "6793324449"
-KSEF_API_BASE        = "https://ksef.mf.gov.pl/api/v2"       # produkcja KSeF 2.0
-# KSEF_API_BASE      = "https://ksef-test.mf.gov.pl/api/v2"  # test
+KSEF_API_BASE        = "https://api.ksef.mf.gov.pl/v2"        # produkcja KSeF 2.0
+# KSEF_API_BASE      = "https://api-test.ksef.mf.gov.pl/v2"  # test
 SHEET_NAME           = "KSeF"
 SPREADSHEET_ID       = os.environ["KSEF_SPREADSHEET_ID"]
 KSEF_TOKEN           = os.environ["KSEF_TOKEN"]
