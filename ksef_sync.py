@@ -35,104 +35,20 @@ ALERT_DAYS           = 7   # alert jeśli termin płatności za mniej niż 7 dni
 # ── KSEF AUTH ────────────────────────────────────────────────────────────────
 def ksef_get_access_token():
     """
-    Autoryzacja KSeF 2.0 tokenem API — flow 3-etapowy:
-    1. POST /auth/challenge  → challenge + klucz publiczny
-    2. Zaszyfruj token KSeF kluczem publicznym (RSA-OAEP SHA-256)
-    3. POST /auth/ksef-token → referenceNumber
-    4. POST /auth/token/redeem → accessToken (JWT)
+    Autoryzacja KSeF 2.0 przez oficjalne SDK ksef2.
     """
-    from cryptography.hazmat.primitives.asymmetric import padding as asym_padding
-    from cryptography.hazmat.primitives import hashes, serialization
-    from cryptography.hazmat.backends import default_backend
-    from cryptography.x509 import load_der_x509_certificate
-    import base64
+    try:
+        from ksef2 import Client
+    except ImportError:
+        raise ImportError("Zainstaluj: pip install ksef2")
 
-    # Krok 1 — pobierz challenge i klucz publiczny
-    r1 = requests.post(f"{KSEF_API_BASE}/auth/challenge", json={
-        "contextIdentifier": {"type": "nip", "value": NIP}
-    })
-    r1.raise_for_status()
-    data1 = r1.json()
-    challenge = data1["challenge"]
-    print(f"Challenge: {challenge[:20]}...")
-
-    # Krok 2 — pobierz klucz publiczny KSeF do szyfrowania tokenów
-    r_cert = requests.get(
-        f"{KSEF_API_BASE}/security/public-key-certificates",
-        params={"usage": "KsefTokenEncryption"}
+    client = Client()  # domyślnie produkcja
+    auth = client.auth.authenticate_token(
+        ksef_token=KSEF_TOKEN,
+        nip=NIP,
     )
-    r_cert.raise_for_status()
-    certs = r_cert.json()
-    # API zwraca listę bezpośrednio
-    cert_list = certs if isinstance(certs, list) else certs.get("certificates", [])
-    token_cert_b64 = None
-    for cert in cert_list:
-        if isinstance(cert, dict):
-            # Szukaj pola z certyfikatem (DER base64)
-            token_cert_b64 = (cert.get("certificate") or 
-                              cert.get("publicKey") or 
-                              cert.get("value"))
-        else:
-            token_cert_b64 = str(cert)
-        if token_cert_b64:
-            break
-    if not token_cert_b64 and cert_list:
-        # fallback: pierwszy cert bez filtrowania usage
-        r_cert2 = requests.get(f"{KSEF_API_BASE}/security/public-key-certificates")
-        r_cert2.raise_for_status()
-        cert_list2 = r_cert2.json()
-        if isinstance(cert_list2, list) and cert_list2:
-            first = cert_list2[0]
-            token_cert_b64 = first.get("certificate") if isinstance(first, dict) else str(first)
-    print(f"Cert prefix: {str(token_cert_b64)[:40] if token_cert_b64 else 'BRAK'}")
-
-    if not token_cert_b64:
-        raise ValueError("Nie udało się pobrać klucza publicznego KSeF")
-
-    # Dekoduj certyfikat DER -> wyciągnij klucz publiczny
-    cert_der = base64.b64decode(token_cert_b64)
-    cert = load_der_x509_certificate(cert_der, default_backend())
-    public_key = cert.public_key()
-
-    # Zaszyfruj token KSeF kluczem publicznym (RSAES-OAEP SHA-256)
-    token_bytes = KSEF_TOKEN.encode("utf-8")
-    encrypted_token = public_key.encrypt(
-        token_bytes,
-        asym_padding.OAEP(
-            mgf=asym_padding.MGF1(algorithm=hashes.SHA256()),
-            algorithm=hashes.SHA256(),
-            label=None
-        )
-    )
-    encrypted_token_b64 = base64.b64encode(encrypted_token).decode("utf-8")
-    print("Token zaszyfrowany.")
-
-    # Krok 3 — wyślij zaszyfrowany token + challenge
-    r2 = requests.post(f"{KSEF_API_BASE}/auth/ksef-token", json={
-        "contextIdentifier": {"type": "nip", "value": NIP},
-        "challenge": challenge,
-        "encryptedToken": encrypted_token_b64
-    })
-    if not r2.ok:
-        print(f"ksef-token error {r2.status_code}: {r2.text[:500]}")
-    r2.raise_for_status()
-    reference_number = r2.json()["referenceNumber"]
-    print(f"ReferenceNumber: {reference_number}")
-
-    # Krok 4 — wymień referenceNumber na accessToken JWT
-    # Zgodnie z dokumentacją KSeF 2.0 redeem wywołujemy od razu po ksef-token
-    import time
-    time.sleep(2)  # krótkie oczekiwanie na przetworzenie
-    r3 = requests.post(
-        f"{KSEF_API_BASE}/auth/token/redeem",
-        json={"referenceNumber": reference_number},
-        headers={"Content-Type": "application/json"}
-    )
-    print(f"Redeem status: {r3.status_code}, body: {r3.text[:400]}")
-    r3.raise_for_status()
-    access_token = r3.json()["accessToken"]
-    print("AccessToken uzyskany.")
-    return access_token
+    print("AccessToken uzyskany przez ksef2 SDK.")
+    return auth.access_token
 
 
 def ksef_terminate_session(access_token):
