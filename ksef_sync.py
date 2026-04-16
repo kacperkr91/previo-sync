@@ -321,7 +321,12 @@ def main():
                 termin_cached = cached[7] if len(cached) > 7 else ""
                 if termin_cached:
                     # Mamy dane — użyj z cache
-                    rows.append(cached[:11] + [datetime.now().strftime("%Y-%m-%d %H:%M")])
+                    # cached ma 11 lub 12 kolumn, normalizujemy do 10 + aktualizacja = 11
+                    row = list(cached[:10])
+                    while len(row) < 10:
+                        row.append("")
+                    row.append(datetime.now().strftime("%Y-%m-%d %H:%M"))
+                    rows.append(row)
                     continue
 
             # Pobierz XML — max MAX_XML_PER_RUN faktur bez terminu na uruchomienie
