@@ -293,17 +293,19 @@ def main():
             parsed = {}
             if ksef_number:
                 import time
-                for attempt in range(4):
+                for attempt in range(5):
                     try:
-                        time.sleep(1 + attempt * 2)  # 1s, 3s, 5s, 7s
+                        wait = [3, 10, 20, 30, 60][attempt]
+                        time.sleep(wait)
                         xml_bytes = ksef_get_invoice_xml(access_token, ksef_number)
                         parsed = parse_invoice_xml(xml_bytes)
                         break
                     except Exception as e:
-                        if attempt == 3:
+                        err = str(e)
+                        if '429' in err and attempt < 4:
+                            print(f"  429 retry {attempt+1}/5 dla {ksef_number[-10:]}, czekam {wait}s...")
+                        elif attempt == 4:
                             print(f"⚠️ Pominięto {ksef_number}: {e}")
-                        else:
-                            pass  # retry
 
             sprzedawca   = parsed.get("sprzedawca_nazwa") or sprzedawca_meta
             nip_sp       = parsed.get("sprzedawca_nip", "") or nip_meta
