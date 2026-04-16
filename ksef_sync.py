@@ -250,6 +250,8 @@ def write_to_sheets(rows_data):
             "data": [{"range": f"{SHEET_NAME}!A1:K2000", "values": rows}]
         }
     )
+    if not resp.ok:
+        print(f"Sheets error {resp.status_code}: {resp.text[:500]}")
     resp.raise_for_status()
     print(f"✅ Zapisano {len(rows_data)} faktur do arkusza '{SHEET_NAME}'")
 
