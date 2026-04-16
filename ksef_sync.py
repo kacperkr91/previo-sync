@@ -268,51 +268,79 @@ def main():
         date_from = (date.today() - timedelta(days=60)).strftime("%Y-%m-%d")
         invoices = ksef_query_invoices(access_token, date_from=date_from)
 
+        import time
+
+        # Wczytaj istniejące dane z arkusza (cache terminów)
+        existing = {}
+        try:
+            token_s = get_sheets_token()
+            hdrs_s = {"Authorization": f"Bearer {token_s}"}
+            sheet_range_read = f"'{SHEET_NAME}'!A2:K2000"
+            enc_read = requests.utils.quote(sheet_range_read)
+            r_read = requests.get(
+                f"https://sheets.googleapis.com/v4/spreadsheets/{SPREADSHEET_ID}/values/{enc_read}",
+                headers=hdrs_s
+            )
+            if r_read.ok:
+                for row in r_read.json().get("values", []):
+                    if row and len(row) >= 8:
+                        existing[row[0]] = row  # ksef_number -> cały wiersz
+            print(f"Wczytano {len(existing)} istniejących wierszy z arkusza")
+        except Exception as e:
+            print(f"Nie udało się wczytać cache: {e}")
+
         rows = []
         today = date.today()
 
         for inv in invoices:
-            # Obsługa zarówno SDK dataclass jak i dict
+            # Obsługa SDK dataclass
             if hasattr(inv, 'ksef_number'):
-                ksef_number = inv.ksef_number or ""
-                inv_date    = (inv.issue_date or "")[:10]
-                brutto_meta = inv.gross_amount or ""
-                netto_meta  = inv.net_amount or ""
-                seller_obj  = getattr(inv, 'seller', None)
+                ksef_number     = inv.ksef_number or ""
+                inv_date        = (inv.issue_date or "")[:10]
+                brutto_meta     = str(inv.gross_amount or "")
+                netto_meta      = str(inv.net_amount or "")
+                seller_obj      = getattr(inv, 'seller', None)
                 sprzedawca_meta = getattr(seller_obj, 'name', "") if seller_obj else ""
-                nip_meta    = getattr(seller_obj, 'nip', "") if seller_obj else ""
+                nip_meta        = getattr(seller_obj, 'nip', "") if seller_obj else ""
             else:
-                ksef_number = inv.get("ksefReferenceNumber") or inv.get("ksefNumber", "")
-                inv_date    = (inv.get("issueDate") or inv.get("invoiceDate") or "")[:10]
-                brutto_meta = inv.get("grossValue", "") or inv.get("gross_amount", "")
-                netto_meta  = inv.get("netAmount", "") or inv.get("net_amount", "")
+                ksef_number     = inv.get("ksefReferenceNumber") or inv.get("ksefNumber", "")
+                inv_date        = (inv.get("issueDate") or "")[:10]
+                brutto_meta     = str(inv.get("grossValue", "") or "")
+                netto_meta      = str(inv.get("netAmount", "") or "")
                 sprzedawca_meta = inv.get("subjectName", "")
-                nip_meta    = ""
+                nip_meta        = ""
 
-            # Pobierz XML dla szczegółów (termin płatności, kwoty, sprzedawca)
+            # Jeśli faktura już w arkuszu i ma termin — użyj cache, nie pobieraj XML
+            if ksef_number in existing:
+                cached = existing[ksef_number]
+                termin_cached = cached[7] if len(cached) > 7 else ""
+                if termin_cached:
+                    # Mamy dane — użyj z cache
+                    rows.append(cached[:11] + [datetime.now().strftime("%Y-%m-%d %H:%M")])
+                    continue
+
+            # Pobierz XML — tylko dla nowych faktur lub bez terminu
             parsed = {}
             if ksef_number:
-                import time
-                for attempt in range(5):
+                for attempt in range(4):
                     try:
-                        wait = [3, 10, 20, 30, 60][attempt]
-                        time.sleep(wait)
+                        time.sleep(2)
                         xml_bytes = ksef_get_invoice_xml(access_token, ksef_number)
                         parsed = parse_invoice_xml(xml_bytes)
                         break
                     except Exception as e:
-                        err = str(e)
-                        if '429' in err and attempt < 4:
-                            print(f"  429 retry {attempt+1}/5 dla {ksef_number[-10:]}, czekam {wait}s...")
-                        elif attempt == 4:
-                            print(f"⚠️ Pominięto {ksef_number}: {e}")
+                        if '429' in str(e) and attempt < 3:
+                            print(f"  429 retry {attempt+1} dla {ksef_number[-8:]}, czekam 15s...")
+                            time.sleep(15)
+                        elif attempt == 3:
+                            print(f"⚠️ Pominięto XML {ksef_number[-8:]}: {e}")
 
-            sprzedawca   = parsed.get("sprzedawca_nazwa") or sprzedawca_meta
-            nip_sp       = parsed.get("sprzedawca_nip", "") or nip_meta
-            netto        = parsed.get("netto", "") or netto_meta
-            vat          = parsed.get("vat", "")
-            brutto       = parsed.get("brutto", "") or brutto_meta
-            termin_str   = parsed.get("termin_platnosci", "")
+            sprzedawca = parsed.get("sprzedawca_nazwa") or sprzedawca_meta
+            nip_sp     = parsed.get("sprzedawca_nip", "") or nip_meta
+            netto      = parsed.get("netto", "") or netto_meta
+            vat        = parsed.get("vat", "")
+            brutto     = parsed.get("brutto", "") or brutto_meta
+            termin_str = parsed.get("termin_platnosci", "")
 
             # Oblicz dni do płatności
             dni_do = ""
