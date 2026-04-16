@@ -236,16 +236,19 @@ def write_to_sheets(rows_data):
 
     rows = [header_row] + rows_data
 
-    range_str = f"{SHEET_NAME}!A1:K2000"
-    requests.delete(
-        f"https://sheets.googleapis.com/v4/spreadsheets/{SPREADSHEET_ID}/values/{range_str}",
-        headers=hdrs
-    )
-    resp = requests.put(
-        f"https://sheets.googleapis.com/v4/spreadsheets/{SPREADSHEET_ID}/values/{range_str}",
+    # Wyczyść arkusz przez batchClear, potem zapisz
+    requests.post(
+        f"https://sheets.googleapis.com/v4/spreadsheets/{SPREADSHEET_ID}/values:batchClear",
         headers=hdrs,
-        params={"valueInputOption": "RAW"},
-        json={"range": range_str, "values": rows}
+        json={"ranges": [f"{SHEET_NAME}!A1:K2000"]}
+    )
+    resp = requests.post(
+        f"https://sheets.googleapis.com/v4/spreadsheets/{SPREADSHEET_ID}/values:batchUpdate",
+        headers=hdrs,
+        json={
+            "valueInputOption": "RAW",
+            "data": [{"range": f"{SHEET_NAME}!A1:K2000", "values": rows}]
+        }
     )
     resp.raise_for_status()
     print(f"✅ Zapisano {len(rows_data)} faktur do arkusza '{SHEET_NAME}'")
