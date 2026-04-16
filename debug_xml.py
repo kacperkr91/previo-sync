@@ -37,7 +37,7 @@ with KsefClient(options) as client:
             result = client.invoices.get_invoice_bytes(num, access_token=access_token)
             xml = result.content
             # Wypisz cały XML (skrócony)
-            print(xml.decode('utf-8')[:3000])
+            print(xml.decode('utf-8')[:8000])
         except Exception as e:
             print(f"BŁĄD: {e}")
         print()
