@@ -236,17 +236,18 @@ def write_to_sheets(rows_data):
 
     rows = [header_row] + rows_data
 
-    sheet_range = f"'{SHEET_NAME}'!A1:K2000"
-    enc_range = requests.utils.quote(sheet_range)
+    # URL: bez apostrofów (tylko nazwa zakładki), JSON body: z apostrofami
+    url_range = requests.utils.quote(f"{SHEET_NAME}!A1:K2000")
+    json_range = f"'{SHEET_NAME}'!A1:K2000"
     requests.delete(
-        f"https://sheets.googleapis.com/v4/spreadsheets/{SPREADSHEET_ID}/values/{enc_range}",
+        f"https://sheets.googleapis.com/v4/spreadsheets/{SPREADSHEET_ID}/values/{url_range}",
         headers=hdrs
     )
     resp = requests.put(
-        f"https://sheets.googleapis.com/v4/spreadsheets/{SPREADSHEET_ID}/values/{enc_range}",
+        f"https://sheets.googleapis.com/v4/spreadsheets/{SPREADSHEET_ID}/values/{url_range}",
         headers=hdrs,
         params={"valueInputOption": "RAW"},
-        json={"range": sheet_range, "values": rows}
+        json={"range": json_range, "values": rows}
     )
     resp.raise_for_status()
     print(f"✅ Zapisano {len(rows_data)} faktur do arkusza '{SHEET_NAME}'")
@@ -275,10 +276,9 @@ def main():
         try:
             token_s = get_sheets_token()
             hdrs_s = {"Authorization": f"Bearer {token_s}"}
-            sheet_range_read = f"'{SHEET_NAME}'!A2:K2000"
-            enc_read = requests.utils.quote(sheet_range_read)
+            url_range_read = requests.utils.quote(f"{SHEET_NAME}!A2:K2000")
             r_read = requests.get(
-                f"https://sheets.googleapis.com/v4/spreadsheets/{SPREADSHEET_ID}/values/{enc_read}",
+                f"https://sheets.googleapis.com/v4/spreadsheets/{SPREADSHEET_ID}/values/{url_range_read}",
                 headers=hdrs_s
             )
             if r_read.ok:
