@@ -178,6 +178,70 @@ def parse_invoice_xml(xml_bytes):
                         return value
         return ""
 
+    def parse_iso_date(value):
+        if not value:
+            return None
+        try:
+            return date.fromisoformat(value[:10])
+        except Exception:
+            return None
+
+    def find_due_date_from_description(issue_date_text):
+        base_date = parse_iso_date(issue_date_text)
+        if not base_date:
+            return ""
+
+        for el in root.iter():
+            if local_name(el.tag) != "TerminPlatnosci":
+                continue
+
+            quantity = ""
+            unit = ""
+            event = ""
+
+            for child in el.iter():
+                child_name = local_name(child.tag)
+                child_text = (child.text or "").strip()
+                if not child_text:
+                    continue
+                if child_name == "Ilosc" and not quantity:
+                    quantity = child_text
+                elif child_name == "Jednostka" and not unit:
+                    unit = child_text.lower()
+                elif child_name == "ZdarzeniePoczatkowe" and not event:
+                    event = child_text.lower()
+
+            if not quantity or not unit:
+                continue
+
+            try:
+                amount = int(quantity)
+            except ValueError:
+                continue
+
+            if event and not any(phrase in event for phrase in (
+                "wystaw",
+                "invoice issue",
+                "issue of the invoice",
+                "data faktury",
+                "invoice date",
+            )):
+                continue
+
+            if "day" in unit or "dni" in unit or "dzie" in unit:
+                return (base_date + timedelta(days=amount)).isoformat()
+            if "week" in unit or "tygod" in unit:
+                return (base_date + timedelta(weeks=amount)).isoformat()
+            if "month" in unit or "miesi" in unit:
+                month_index = base_date.month - 1 + amount
+                year = base_date.year + month_index // 12
+                month = month_index % 12 + 1
+                month_lengths = [31, 29 if year % 4 == 0 and (year % 100 != 0 or year % 400 == 0) else 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+                day = min(base_date.day, month_lengths[month - 1])
+                return date(year, month, day).isoformat()
+
+        return ""
+
     # Sprzedawca (Podmiot1)
     sprzedawca_nip   = find(".//fa:Podmiot1/fa:DaneIdentyfikacyjne/fa:NIP")
     sprzedawca_nazwa = (find(".//fa:Podmiot1/fa:DaneIdentyfikacyjne/fa:PelnaNazwa") or
@@ -198,6 +262,8 @@ def parse_invoice_xml(xml_bytes):
         find_payment_due_date() or
         find_first_text_by_local_names("P_22", "P22")
     )
+    if not termin:
+        termin = find_due_date_from_description(p1)
 
     return {
         "data_wystawienia": p1,
