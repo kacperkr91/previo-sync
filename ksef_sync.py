@@ -178,6 +178,14 @@ def parse_invoice_xml(xml_bytes):
                         return value
         return ""
 
+    def find_paid_date():
+        for el in root.iter():
+            if local_name(el.tag) == "DataZaplaty" and el.text:
+                value = el.text.strip()
+                if value:
+                    return value
+        return ""
+
     def parse_iso_date(value):
         if not value:
             return None
@@ -264,6 +272,8 @@ def parse_invoice_xml(xml_bytes):
     )
     if not termin:
         termin = find_due_date_from_description(p1)
+    if not termin:
+        termin = find_paid_date()
 
     return {
         "data_wystawienia": p1,
