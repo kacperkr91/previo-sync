@@ -15,7 +15,6 @@ Zakładka 'KSeF' w arkuszu będzie zawierać kolumny:
 """
 
 import os
-import re
 import json
 import base64
 import requests
@@ -31,6 +30,7 @@ SPREADSHEET_ID       = os.environ["KSEF_SPREADSHEET_ID"]
 KSEF_TOKEN           = os.environ["KSEF_TOKEN"]
 GS_SA_JSON_B64       = os.environ.get("GS_SA_JSON_B64", "")
 ALERT_DAYS           = 7   # alert jeśli termin płatności za mniej niż 7 dni
+XML_FETCH_DELAY_SEC  = 6   # bezpieczny odstęp między pobraniami XML z KSeF
 
 # ── KSEF AUTH ────────────────────────────────────────────────────────────────
 def ksef_get_access_token():
@@ -110,6 +110,14 @@ def ksef_query_invoices(access_token, date_from=None, date_to=None):
     return all_invoices
 
 
+def to_ksef_datetime_range_start(day_value):
+    return f"{day_value.strftime('%Y-%m-%d')}T00:00:00"
+
+
+def to_ksef_datetime_range_end(day_value):
+    return f"{day_value.strftime('%Y-%m-%d')}T23:59:59"
+
+
 def ksef_get_invoice_xml(access_token, ksef_number):
     """Pobiera XML faktury po numerze KSeF 2.0."""
     from ksef_client import KsefClient, KsefClientOptions, KsefEnvironment
@@ -133,8 +141,6 @@ def parse_invoice_xml(xml_bytes):
 
     # Wykryj namespace
     ns_uri = root.tag.split('}')[0].strip('{') if '}' in root.tag else ""
-    ns = {"fa": ns_uri} if ns_uri else {}
-    prefix = f"{{{ns_uri}}}" if ns_uri else ""
 
     def find(path):
         """Szukaj przez XPath z namespace."""
@@ -146,6 +152,30 @@ def parse_invoice_xml(xml_bytes):
                 return el.text.strip()
         except Exception:
             pass
+        return ""
+
+    def local_name(tag):
+        return tag.split("}", 1)[-1] if "}" in tag else tag
+
+    def find_first_text_by_local_names(*names):
+        wanted = set(names)
+        for el in root.iter():
+            if local_name(el.tag) in wanted and el.text:
+                value = el.text.strip()
+                if value:
+                    return value
+        return ""
+
+    def find_payment_due_date():
+        # Szukamy po nazwach lokalnych, bo struktura i namespace faktur potrafią się różnić
+        for el in root.iter():
+            if local_name(el.tag) != "TerminPlatnosci":
+                continue
+            for child in el.iter():
+                if local_name(child.tag) == "Termin" and child.text:
+                    value = child.text.strip()
+                    if value:
+                        return value
         return ""
 
     # Sprzedawca (Podmiot1)
@@ -161,10 +191,13 @@ def parse_invoice_xml(xml_bytes):
 
     # Termin płatności — szukamy w Platnosc/TerminPlatnosci/Termin
     # Ścieżka może być w <Fa><Platnosc> lub bezpośrednio w <Platnosc>
-    termin = (find(".//fa:Fa/fa:Platnosc/fa:TerminPlatnosci/fa:Termin") or
-              find(".//fa:Platnosc/fa:TerminPlatnosci/fa:Termin"))
-    if not termin:
-        termin = find(".//fa:Fa/fa:P_22") or find(".//fa:Fa/fa:P22")
+    termin = (
+        find(".//fa:Fa/fa:Platnosc/fa:TerminPlatnosci/fa:Termin") or
+        find(".//fa:Platnosc/fa:TerminPlatnosci/fa:Termin") or
+        find(".//fa:TerminPlatnosci/fa:Termin") or
+        find_payment_due_date() or
+        find_first_text_by_local_names("P_22", "P22")
+    )
 
     return {
         "data_wystawienia": p1,
@@ -268,9 +301,10 @@ def main():
     print("Sesja aktywna.")
 
     try:
-        # Pobierz faktury (ostatnie 60 dni żeby nie ominąć niczego)
-        date_from = (date.today() - timedelta(days=60)).strftime("%Y-%m-%d")
-        invoices = ksef_query_invoices(access_token, date_from=date_from)
+        # Pobierz faktury z ostatnich 60 dni w pełnym formacie daty/czasu KSeF
+        date_from = to_ksef_datetime_range_start(date.today() - timedelta(days=60))
+        date_to = to_ksef_datetime_range_end(date.today())
+        invoices = ksef_query_invoices(access_token, date_from=date_from, date_to=date_to)
 
         import time
 
@@ -292,7 +326,6 @@ def main():
         except Exception as e:
             print(f"Nie udało się wczytać cache: {e}")
 
-        MAX_XML_PER_RUN = 10  # max XML do pobrania na jedno uruchomienie
         xml_fetched = 0
         rows = []
         today = date.today()
@@ -315,29 +348,34 @@ def main():
                 sprzedawca_meta = inv.get("subjectName", "")
                 nip_meta        = ""
 
-            # Jeśli faktura już w arkuszu i ma termin — użyj cache, nie pobieraj XML
+            # Sprawdź cache
+            termin_z_cache = ""
             if ksef_number in existing:
                 cached = existing[ksef_number]
-                termin_cached = cached[7] if len(cached) > 7 else ""
-                if termin_cached:
-                    # Mamy dane — użyj z cache
-                    # cached ma 11 lub 12 kolumn, normalizujemy do 10 + aktualizacja = 11
-                    row = list(cached[:10])
-                    while len(row) < 10:
-                        row.append("")
-                    row.append(datetime.now().strftime("%Y-%m-%d %H:%M"))
-                    rows.append(row)
-                    continue
+                termin_z_cache = cached[7] if len(cached) > 7 else ""
 
-            # Pobierz XML — max MAX_XML_PER_RUN faktur bez terminu na uruchomienie
+            # Pobierz XML dla każdej faktury bez terminu w cache.
+            # Dzięki temu skrypt uzupełnia wszystkie możliwe terminy w jednym uruchomieniu.
             parsed = {}
-            if ksef_number and xml_fetched < MAX_XML_PER_RUN:
+            if termin_z_cache:
+                # Mamy termin z cache — użyj go bezpośrednio
+                parsed = {"termin_platnosci": termin_z_cache}
+                # Wczytaj też inne pola z cache jeśli dostępne
+                cached = existing.get(ksef_number, [])
+                if len(cached) >= 7:
+                    parsed["sprzedawca_nazwa"] = cached[2] if len(cached) > 2 else ""
+                    parsed["sprzedawca_nip"]   = cached[3] if len(cached) > 3 else ""
+                    parsed["netto"]            = cached[4] if len(cached) > 4 else ""
+                    parsed["vat"]              = cached[5] if len(cached) > 5 else ""
+                    parsed["brutto"]           = cached[6] if len(cached) > 6 else ""
+            elif ksef_number:
                 try:
-                    time.sleep(6)  # ~10 req/min
+                    time.sleep(XML_FETCH_DELAY_SEC)
                     xml_bytes = ksef_get_invoice_xml(access_token, ksef_number)
                     parsed = parse_invoice_xml(xml_bytes)
                     xml_fetched += 1
-                    print(f"  XML {xml_fetched}/{MAX_XML_PER_RUN}: {ksef_number[-12:]}")
+                    termin_log = parsed.get("termin_platnosci", "") or "BRAK"
+                    print(f"  XML {xml_fetched}: {ksef_number[-12:]} | termin: {termin_log[:10]}")
                 except Exception as e:
                     print(f"⚠️ Brak XML {ksef_number[-12:]}: {e}")
 
