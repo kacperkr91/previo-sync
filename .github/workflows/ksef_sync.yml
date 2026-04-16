@@ -2,7 +2,7 @@ name: KSeF Sync
 
 on:
   schedule:
-    - cron: '0 6 * * *'   # codziennie o 6:00 UTC (8:00 Warsaw)
+    - cron: '0 */2 * * *'  # co 2 godziny
   workflow_dispatch:        # możliwość ręcznego uruchomienia
 
 jobs:
