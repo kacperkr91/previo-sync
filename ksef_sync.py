@@ -292,6 +292,8 @@ def main():
         except Exception as e:
             print(f"Nie udało się wczytać cache: {e}")
 
+        MAX_XML_PER_RUN = 10  # max XML do pobrania na jedno uruchomienie
+        xml_fetched = 0
         rows = []
         today = date.today()
 
@@ -322,22 +324,17 @@ def main():
                     rows.append(cached[:11] + [datetime.now().strftime("%Y-%m-%d %H:%M")])
                     continue
 
-            # Pobierz XML — tylko dla nowych faktur lub bez terminu
+            # Pobierz XML — max MAX_XML_PER_RUN faktur bez terminu na uruchomienie
             parsed = {}
-            if ksef_number:
-                for attempt in range(3):
-                    try:
-                        time.sleep(0.5)
-                        xml_bytes = ksef_get_invoice_xml(access_token, ksef_number)
-                        parsed = parse_invoice_xml(xml_bytes)
-                        break
-                    except Exception as e:
-                        if '429' in str(e) and attempt < 2:
-                            print(f"  429 retry {attempt+1} dla {ksef_number[-8:]}, czekam 5s...")
-                            time.sleep(5)
-                        else:
-                            print(f"⚠️ Pominięto XML {ksef_number[-8:]}: {e}")
-                            break
+            if ksef_number and xml_fetched < MAX_XML_PER_RUN:
+                try:
+                    time.sleep(6)  # ~10 req/min
+                    xml_bytes = ksef_get_invoice_xml(access_token, ksef_number)
+                    parsed = parse_invoice_xml(xml_bytes)
+                    xml_fetched += 1
+                    print(f"  XML {xml_fetched}/{MAX_XML_PER_RUN}: {ksef_number[-12:]}")
+                except Exception as e:
+                    print(f"⚠️ Brak XML {ksef_number[-12:]}: {e}")
 
             sprzedawca = parsed.get("sprzedawca_nazwa") or sprzedawca_meta
             nip_sp     = parsed.get("sprzedawca_nip", "") or nip_meta
