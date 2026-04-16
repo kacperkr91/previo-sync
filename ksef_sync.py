@@ -139,7 +139,9 @@ def parse_invoice_xml(xml_bytes):
     def find(path):
         """Szukaj przez XPath z namespace."""
         try:
-            el = root.find(path.replace("fa:", prefix), {})
+            # Zamień fa: na {ns_uri} poprawnie
+            real_path = path.replace("fa:", f"{{{ns_uri}}}" if ns_uri else "")
+            el = root.find(real_path)
             if el is not None and el.text:
                 return el.text.strip()
         except Exception:
@@ -157,16 +159,10 @@ def parse_invoice_xml(xml_bytes):
     p16  = find(".//fa:Fa/fa:P_16")  or find(".//fa:Fa/fa:P16")
     p13  = find(".//fa:Fa/fa:P_13_1") or find(".//fa:Fa/fa:P13_1")
 
-    # Termin płatności — szukamy Platnosc/TerminPlatnosci/Termin
-    termin = find(".//fa:Fa/fa:Platnosc/fa:TerminPlatnosci/fa:Termin")
-    if not termin:
-        # Szukaj <Termin> gdziekolwiek — tylko wartości w formacie daty
-        for el in root.iter(f"{prefix}Termin"):
-            if el.text and el.text.strip():
-                val = el.text.strip()
-                if len(val) >= 10 and val[4] == "-" and val[7] == "-":
-                    termin = val
-                    break
+    # Termin płatności — szukamy w Platnosc/TerminPlatnosci/Termin
+    # Ścieżka może być w <Fa><Platnosc> lub bezpośrednio w <Platnosc>
+    termin = (find(".//fa:Fa/fa:Platnosc/fa:TerminPlatnosci/fa:Termin") or
+              find(".//fa:Platnosc/fa:TerminPlatnosci/fa:Termin"))
     if not termin:
         termin = find(".//fa:Fa/fa:P_22") or find(".//fa:Fa/fa:P22")
 
