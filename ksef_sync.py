@@ -236,18 +236,16 @@ def write_to_sheets(rows_data):
 
     rows = [header_row] + rows_data
 
-    # URL: bez apostrofów (tylko nazwa zakładki), JSON body: z apostrofami
-    url_range = requests.utils.quote(f"{SHEET_NAME}!A1:K2000")
-    json_range = f"'{SHEET_NAME}'!A1:K2000"
+    range_str = f"{SHEET_NAME}!A1:K2000"
     requests.delete(
-        f"https://sheets.googleapis.com/v4/spreadsheets/{SPREADSHEET_ID}/values/{url_range}",
+        f"https://sheets.googleapis.com/v4/spreadsheets/{SPREADSHEET_ID}/values/{range_str}",
         headers=hdrs
     )
     resp = requests.put(
-        f"https://sheets.googleapis.com/v4/spreadsheets/{SPREADSHEET_ID}/values/{url_range}",
+        f"https://sheets.googleapis.com/v4/spreadsheets/{SPREADSHEET_ID}/values/{range_str}",
         headers=hdrs,
         params={"valueInputOption": "RAW"},
-        json={"range": json_range, "values": rows}
+        json={"range": range_str, "values": rows}
     )
     resp.raise_for_status()
     print(f"✅ Zapisano {len(rows_data)} faktur do arkusza '{SHEET_NAME}'")
