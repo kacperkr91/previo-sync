@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-"""Debug — wypisuje tagi płatności i termin z pełnego XML."""
 import os, time
 import xml.etree.ElementTree as ET
 from ksef_client import KsefClient, KsefClientOptions, KsefEnvironment
@@ -10,8 +9,8 @@ KSEF_TOKEN = os.environ["KSEF_TOKEN"]
 NIP = "6793324449"
 
 NUMBERS = [
-    "6762337735-20260305-5EF63B4002D5-42",  # MA termin
-    "6762337735-20260309-5BDA3100002D-3A",  # NIE MA terminu
+    "5272706082-20260309-45488400003B-EC",  # MA termin w arkuszu
+    "5272706082-20260409-616774C0000C-2C",  # NIE MA terminu w arkuszu
 ]
 
 options = KsefClientOptions(base_url=KsefEnvironment.PROD.value)
@@ -20,40 +19,50 @@ with KsefClient(options) as client:
         m.PublicKeyCertificateUsage.KSEFTOKENENCRYPTION,
     )
     auth = AuthCoordinator(client.auth).authenticate_with_ksef_token(
-        token=KSEF_TOKEN,
-        public_certificate=token_cert_pem,
-        context_identifier_type="nip",
-        context_identifier_value=NIP,
+        token=KSEF_TOKEN, public_certificate=token_cert_pem,
+        context_identifier_type="nip", context_identifier_value=NIP,
     )
     access_token = auth.access_token
     print("Token OK\n")
 
     for num in NUMBERS:
-        time.sleep(1)
+        time.sleep(2)
         print(f"{'='*60}")
         print(f"FAKTURA: {num}")
         try:
             result = client.invoices.get_invoice_bytes(num, access_token=access_token)
             xml = result.content
             root = ET.fromstring(xml)
-            prefix = root.tag.split('}')[0].strip('{') if '}' in root.tag else ''
-            prefix = f'{{{prefix}}}' if prefix else ''
+            ns_uri = root.tag.split('}')[0].strip('{') if '}' in root.tag else ''
 
-            # Wypisz WSZYSTKIE tagi z ich wartościami
-            print("Wszystkie tagi zawierające daty lub 'termin':")
+            def find(path):
+                real_path = path.replace("fa:", f"{{{ns_uri}}}" if ns_uri else "")
+                el = root.find(real_path)
+                return el.text.strip() if el is not None and el.text else ""
+
+            print(f"P_1: {find('.//fa:Fa/fa:P_1')}")
+            print(f"P_15: {find('.//fa:Fa/fa:P_15')}")
+            print(f"NIP sprzedawcy: {find('.//fa:Podmiot1/fa:DaneIdentyfikacyjne/fa:NIP')}")
+            print(f"Termin (Fa/Platnosc): {find('.//fa:Fa/fa:Platnosc/fa:TerminPlatnosci/fa:Termin')}")
+            print(f"Termin (Platnosc): {find('.//fa:Platnosc/fa:TerminPlatnosci/fa:Termin')}")
+
+            # Wypisz wszystkie tagi Platnosc i Termin
+            print("Tagi płatności:")
             for el in root.iter():
                 local = el.tag.split('}')[1] if '}' in el.tag else el.tag
-                val = el.text.strip() if el.text else ''
-                if val and ('Termin' in local or 'Platnosc' in local or
-                            (len(val) == 10 and val[4:5] == '-' and val[7:8] == '-')):
-                    print(f"  <{local}> = {val!r}")
+                if local in ('Platnosc', 'TerminPlatnosci', 'Termin', 'DoZaplaty', 'FormaPlatnosci'):
+                    # Pokaż też rodzica
+                    print(f"  <{local}> = {el.text!r}")
 
-            print("\nWszystkie unikalne nazwy tagów w dokumencie:")
-            tags = sorted(set(
-                el.tag.split('}')[1] if '}' in el.tag else el.tag
-                for el in root.iter()
-            ))
-            print(" ", tags)
+            # Pokaż kontekst - gdzie jest Platnosc w drzewie
+            print("Struktura Platnosc:")
+            for parent in root.iter():
+                p_local = parent.tag.split('}')[1] if '}' in parent.tag else parent.tag
+                for child in parent:
+                    c_local = child.tag.split('}')[1] if '}' in child.tag else child.tag
+                    if c_local in ('Platnosc', 'TerminPlatnosci', 'Termin'):
+                        print(f"  {p_local} -> {c_local} = {child.text!r}")
+
         except Exception as e:
             print(f"BŁĄD: {e}")
         print()
