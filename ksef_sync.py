@@ -325,18 +325,19 @@ def main():
             # Pobierz XML — tylko dla nowych faktur lub bez terminu
             parsed = {}
             if ksef_number:
-                for attempt in range(4):
+                for attempt in range(3):
                     try:
-                        time.sleep(2)
+                        time.sleep(0.5)
                         xml_bytes = ksef_get_invoice_xml(access_token, ksef_number)
                         parsed = parse_invoice_xml(xml_bytes)
                         break
                     except Exception as e:
-                        if '429' in str(e) and attempt < 3:
-                            print(f"  429 retry {attempt+1} dla {ksef_number[-8:]}, czekam 15s...")
-                            time.sleep(15)
-                        elif attempt == 3:
+                        if '429' in str(e) and attempt < 2:
+                            print(f"  429 retry {attempt+1} dla {ksef_number[-8:]}, czekam 5s...")
+                            time.sleep(5)
+                        else:
                             print(f"⚠️ Pominięto XML {ksef_number[-8:]}: {e}")
+                            break
 
             sprzedawca = parsed.get("sprzedawca_nazwa") or sprzedawca_meta
             nip_sp     = parsed.get("sprzedawca_nip", "") or nip_meta
