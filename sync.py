@@ -98,3 +98,85 @@ def parse_reservations(xml_bytes):
                 channel,
                 t("price"),
                 t("currency/code"),
+                t("status/statusId"),
+                t("guest/name"),
+                t("guest/countryCode"),
+                t("contactPerson/phone"),
+                t("company/name").strip(),
+                datetime.now().strftime("%Y-%m-%d %H:%M"),
+            ]
+        )
+
+    return rows
+
+
+def get_sheets_service():
+    creds_dict = json.loads(SERVICE_ACCOUNT_JSON)
+    creds = service_account.Credentials.from_service_account_info(
+        creds_dict,
+        scopes=["https://www.googleapis.com/auth/spreadsheets"],
+    )
+    return build("sheets", "v4", credentials=creds).spreadsheets()
+
+
+def ensure_sheet_exists(service):
+    meta = service.get(spreadsheetId=SHEET_ID).execute()
+    sheets = [s["properties"]["title"] for s in meta["sheets"]]
+
+    if SHEET_NAME not in sheets:
+        service.batchUpdate(
+            spreadsheetId=SHEET_ID,
+            body={"requests": [{"addSheet": {"properties": {"title": SHEET_NAME}}}]},
+        ).execute()
+        print(f"Created sheet: {SHEET_NAME}")
+
+
+def write_to_sheets(service, rows):
+    headers = [
+        "ID Rezerwacji",
+        "Voucher",
+        "Data rezerwacji",
+        "Data od",
+        "Data do",
+        "Noce",
+        "Apartament",
+        "Kanał",
+        "Cena",
+        "Waluta",
+        "Status",
+        "Gość",
+        "Kraj",
+        "Telefon",
+        "Firma",
+        "Ostatnia aktualizacja",
+    ]
+
+    service.values().clear(
+        spreadsheetId=SHEET_ID,
+        range=f"{SHEET_NAME}!A:P",
+    ).execute()
+
+    service.values().update(
+        spreadsheetId=SHEET_ID,
+        range=f"{SHEET_NAME}!A1",
+        valueInputOption="RAW",
+        body={"values": [headers] + rows},
+    ).execute()
+
+    print(f"Written {len(rows)} reservations to Google Sheets")
+
+
+def main():
+    print(f"Fetching reservations {DATE_FROM} - {DATE_TO}...")
+    xml_data = fetch_reservations()
+    rows = parse_reservations(xml_data)
+    print(f"Parsed {len(rows)} reservations")
+
+    service = get_sheets_service()
+    ensure_sheet_exists(service)
+    write_to_sheets(service, rows)
+    print("Done!")
+
+
+if __name__ == "__main__":
+    main()
