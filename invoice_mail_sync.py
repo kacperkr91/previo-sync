@@ -21,9 +21,9 @@ SHEET_ID = os.environ["GOOGLE_SHEET_ID"]
 SHEET_NAME = "Previo"
 SERVICE_ACCOUNT_JSON = os.environ["GOOGLE_SERVICE_ACCOUNT"]
 
-GMAIL_CLIENT_ID = os.environ["GMAIL_CLIENT_ID"]
-GMAIL_CLIENT_SECRET = os.environ["GMAIL_CLIENT_SECRET"]
-GMAIL_REFRESH_TOKEN = os.environ["GMAIL_REFRESH_TOKEN"]
+INVOICE_GMAIL_CLIENT_ID = os.environ["INVOICE_GMAIL_CLIENT_ID"]
+INVOICE_GMAIL_CLIENT_SECRET = os.environ["INVOICE_GMAIL_CLIENT_SECRET"]
+INVOICE_GMAIL_REFRESH_TOKEN = os.environ["INVOICE_GMAIL_REFRESH_TOKEN"]
 
 GMAIL_SCOPES = ["https://www.googleapis.com/auth/gmail.readonly"]
 SHEETS_SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
@@ -119,10 +119,10 @@ def invoice_priority(source, status):
 def gmail_service():
     creds = Credentials(
         token=None,
-        refresh_token=GMAIL_REFRESH_TOKEN,
+        refresh_token=INVOICE_GMAIL_REFRESH_TOKEN,
         token_uri="https://oauth2.googleapis.com/token",
-        client_id=GMAIL_CLIENT_ID,
-        client_secret=GMAIL_CLIENT_SECRET,
+        client_id=INVOICE_GMAIL_CLIENT_ID,
+        client_secret=INVOICE_GMAIL_CLIENT_SECRET,
         scopes=GMAIL_SCOPES,
     )
     creds.refresh(Request())
