@@ -5,6 +5,8 @@ Runs via GitHub Actions every hour
 """
 import json
 import os
+import re
+import unicodedata
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta
 
@@ -26,6 +28,175 @@ SERVICE_ACCOUNT_JSON = os.environ["GOOGLE_SERVICE_ACCOUNT"]
 DATE_FROM = "2025-01-01"
 DATE_TO = (datetime.now() + timedelta(days=90)).strftime("%Y-%m-%d")
 RESERVATION_LIMIT = 2000
+INVOICE_HEADERS = [
+    "Faktura status",
+    "Firma do faktury",
+    "NIP/VAT",
+    "Źródło faktury",
+    "Wiadomość fakturowa",
+]
+
+
+def normalize_text(value):
+    text = unicodedata.normalize("NFD", str(value or ""))
+    text = "".join(ch for ch in text if unicodedata.category(ch) != "Mn")
+    return text.lower()
+
+
+def clean_tax_number(value):
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    digits = re.sub(r"\D", "", raw)
+    if len(digits) >= 10:
+        return digits[:10]
+    return raw
+
+
+def extract_tax_number(text):
+    if not text:
+        return ""
+
+    patterns = [
+        r"number\s*=\s*([A-Za-z0-9\- ]{6,30})\s+numbertype\s*=\s*vat",
+        r"(?:nip|vat|tax\s*id|vat\s*id)\s*[:=]?\s*([A-Za-z0-9\- ]{6,30})",
+        r"\b(\d{3}[- ]?\d{3}[- ]?\d{2}[- ]?\d{2})\b",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, text, flags=re.IGNORECASE)
+        if match:
+            tax_number = clean_tax_number(match.group(1))
+            if tax_number:
+                return tax_number
+    return ""
+
+
+def extract_affiliation_company(note):
+    match = re.search(
+        r"affiliation:\s*name=(.*?)\s+number=",
+        note or "",
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    if match:
+        return " ".join(match.group(1).split())
+    return ""
+
+
+def invoice_priority(info):
+    source = normalize_text(info.get("source", ""))
+    status = normalize_text(info.get("status", ""))
+    if not status:
+        return 0
+    if "previo note" in source or "log" in source or "affiliation" in source:
+        return 4
+    if "gmail" in source or "mail" in source or "booking.com email" in source:
+        return 3
+    if "recznie" in source or "ręcznie" in source or "company/name" in source:
+        return 2
+    return 1
+
+
+def merge_invoice_info(primary, fallback):
+    """Keep higher-priority source, but enrich missing company/NIP/message from fallback."""
+    primary = primary or {}
+    fallback = fallback or {}
+    if invoice_priority(fallback) > invoice_priority(primary):
+        primary, fallback = fallback, primary
+
+    merged = dict(primary)
+    for key in ("company", "tax_id", "message"):
+        if not merged.get(key) and fallback.get(key):
+            merged[key] = fallback[key]
+    return merged
+
+
+def invoice_info_to_cells(info):
+    return [
+        info.get("status", ""),
+        info.get("company", ""),
+        info.get("tax_id", ""),
+        info.get("source", ""),
+        info.get("message", ""),
+    ]
+
+
+def cells_to_invoice_info(cells):
+    cells = (cells or []) + [""] * 5
+    return {
+        "status": str(cells[0] or "").strip(),
+        "company": str(cells[1] or "").strip(),
+        "tax_id": str(cells[2] or "").strip(),
+        "source": str(cells[3] or "").strip(),
+        "message": str(cells[4] or "").strip(),
+    }
+
+
+def extract_invoice_info(note, company_name):
+    note = note or ""
+    company_name = (company_name or "").strip()
+    norm = normalize_text(note)
+
+    company = extract_affiliation_company(note)
+    tax_id = extract_tax_number(note)
+    has_affiliation = "affiliation:" in norm
+    has_company_flag = "type=company" in norm or "numbertype=vat" in norm
+
+    if has_affiliation or has_company_flag or tax_id:
+        return {
+            "status": "TAK" if tax_id else "TAK - BRAK NIP",
+            "company": company or company_name,
+            "tax_id": tax_id,
+            "source": "Previo note / affiliation",
+            "message": note[:500],
+        }
+
+    negative_patterns = [
+        "bez faktur",
+        "nie potrzebuje faktur",
+        "nie chce faktur",
+        "nie prosze o faktur",
+        "no invoice",
+        "invoice not needed",
+        "without invoice",
+    ]
+    if any(pattern in norm for pattern in negative_patterns):
+        return {
+            "status": "NIE",
+            "company": "",
+            "tax_id": "",
+            "source": "Previo note",
+            "message": note[:500],
+        }
+
+    invoice_patterns = [
+        "faktur",
+        "invoice",
+        "vat invoice",
+        "nip",
+        "na firme",
+        "dane do faktur",
+        "company invoice",
+        "billing details",
+    ]
+    if any(pattern in norm for pattern in invoice_patterns):
+        return {
+            "status": "TAK" if tax_id else "WYMAGA DANYCH",
+            "company": company or company_name,
+            "tax_id": tax_id,
+            "source": "Previo note",
+            "message": note[:500],
+        }
+
+    if company_name:
+        return {
+            "status": "TAK - BRAK NIP",
+            "company": company_name,
+            "tax_id": "",
+            "source": "Previo ręcznie / company/name",
+            "message": "",
+        }
+
+    return {"status": "", "company": "", "tax_id": "", "source": "", "message": ""}
 
 
 def fetch_reservations():
@@ -86,6 +257,9 @@ def parse_reservations(xml_bytes):
         except Exception:
             pass
 
+        company_name = t("company/name").strip()
+        invoice_info = extract_invoice_info(note, company_name)
+
         rows.append(
             [
                 t("resId"),
@@ -102,8 +276,9 @@ def parse_reservations(xml_bytes):
                 t("guest/name"),
                 t("guest/countryCode"),
                 t("contactPerson/phone"),
-                t("company/name").strip(),
+                company_name,
                 datetime.now().strftime("%Y-%m-%d %H:%M"),
+                *invoice_info_to_cells(invoice_info),
             ]
         )
 
@@ -131,6 +306,40 @@ def ensure_sheet_exists(service):
         print(f"Created sheet: {SHEET_NAME}")
 
 
+def read_existing_invoice_map(service):
+    try:
+        result = service.values().get(
+            spreadsheetId=SHEET_ID,
+            range=f"{SHEET_NAME}!A2:U",
+        ).execute()
+    except Exception:
+        return {}
+
+    invoice_map = {}
+    for row in result.get("values", []):
+        row = row + [""] * 21
+        res_id = str(row[0] or "").strip()
+        voucher = str(row[1] or "").strip()
+        info = cells_to_invoice_info(row[16:21])
+        if not info.get("status"):
+            continue
+        for key in (res_id, voucher):
+            if key:
+                invoice_map[key] = info
+    return invoice_map
+
+
+def apply_existing_invoice_data(rows, existing_invoice_map):
+    merged_rows = []
+    for row in rows:
+        row = row + [""] * (21 - len(row))
+        current = cells_to_invoice_info(row[16:21])
+        existing = existing_invoice_map.get(str(row[0]).strip()) or existing_invoice_map.get(str(row[1]).strip())
+        merged = merge_invoice_info(current, existing)
+        merged_rows.append(row[:16] + invoice_info_to_cells(merged))
+    return merged_rows
+
+
 def write_to_sheets(service, rows):
     headers = [
         "ID Rezerwacji",
@@ -149,11 +358,12 @@ def write_to_sheets(service, rows):
         "Telefon",
         "Firma",
         "Ostatnia aktualizacja",
+        *INVOICE_HEADERS,
     ]
 
     service.values().clear(
         spreadsheetId=SHEET_ID,
-        range=f"{SHEET_NAME}!A:P",
+        range=f"{SHEET_NAME}!A:U",
     ).execute()
 
     service.values().update(
@@ -174,6 +384,8 @@ def main():
 
     service = get_sheets_service()
     ensure_sheet_exists(service)
+    existing_invoice_map = read_existing_invoice_map(service)
+    rows = apply_existing_invoice_data(rows, existing_invoice_map)
     write_to_sheets(service, rows)
     print("Done!")
 
