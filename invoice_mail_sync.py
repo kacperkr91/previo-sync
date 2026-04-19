@@ -9,6 +9,7 @@ import base64
 import json
 import os
 import re
+import time
 import unicodedata
 from datetime import datetime
 
@@ -16,6 +17,7 @@ from google.oauth2.credentials import Credentials
 from google.oauth2 import service_account
 from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
 
 SHEET_ID = os.environ["GOOGLE_SHEET_ID"]
 SHEET_NAME = "Previo"
@@ -234,20 +236,35 @@ def update_invoice_rows(sheet_service, updates):
     if not updates:
         return
 
-    data = [
+    data_all = [
         {
             "range": f"{SHEET_NAME}!Q{row_number}:U{row_number}",
             "values": [cells],
         }
         for row_number, cells in sorted(updates.items())
     ]
-    sheet_service.values().batchUpdate(
-        spreadsheetId=SHEET_ID,
-        body={
-            "valueInputOption": "RAW",
-            "data": data,
-        },
-    ).execute()
+    chunk_size = 40
+    for start in range(0, len(data_all), chunk_size):
+        chunk = data_all[start : start + chunk_size]
+        for attempt in range(5):
+            try:
+                sheet_service.values().batchUpdate(
+                    spreadsheetId=SHEET_ID,
+                    body={
+                        "valueInputOption": "RAW",
+                        "data": chunk,
+                    },
+                ).execute()
+                break
+            except (HttpError, OSError) as exc:
+                if attempt == 4:
+                    raise
+                wait_seconds = 2 ** attempt
+                print(
+                    f"Sheets batch update failed for rows chunk {start + 1}-{start + len(chunk)} "
+                    f"(attempt {attempt + 1}/5): {exc}. Retrying in {wait_seconds}s..."
+                )
+                time.sleep(wait_seconds)
 
 
 def shorten_message(text):
