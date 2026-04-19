@@ -30,7 +30,8 @@ SHEETS_SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 
 GMAIL_QUERY = (
     'newer_than:365d '
-    '(faktura OR fakture OR fakturę OR invoice OR NIP OR VAT OR "na firmę" OR "na firme")'
+    '(faktura OR fakture OR fakturę OR invoice OR NIP OR "na firmę" OR "na firme" '
+    'OR affiliation OR numbertype)'
 )
 
 
@@ -47,6 +48,7 @@ def clean_tax_number(value):
 
 def extract_tax_number(text):
     patterns = [
+        r"number\s*=\s*([A-Za-z0-9\- ]{6,30})\s+numbertype\s*=\s*vat",
         r"(?:nip|vat|tax\s*id|vat\s*id)\s*[:=]?\s*([A-Za-z0-9\- ]{6,30})",
         r"\b(\d{3}[- ]?\d{3}[- ]?\d{2}[- ]?\d{2})\b",
     ]
@@ -62,6 +64,8 @@ def extract_tax_number(text):
 def extract_reservation_id(text):
     patterns = [
         r"Numer potwierdzenia rezerwacji\s*:?\s*(\d{6,12})",
+        r"Numer rezerwacji\s*-\s*Previo\s*:?\s*(\d{6,12})",
+        r"Numer rezerwacji\s*-\s*Portalu\s*:?\s*(\d{6,12})",
         r"Numer rezerwacji\s*:?\s*(\d{6,12})",
         r"reservation (?:number|id)\s*:?\s*(\d{6,12})",
         r"confirmation (?:number|id)\s*:?\s*(\d{6,12})",
@@ -87,6 +91,9 @@ def classify_invoice_request(text):
     if any(phrase in norm for phrase in negative):
         return "NIE"
 
+    if "affiliation:" in norm and ("numbertype=vat" in norm or "type=company" in norm):
+        return "TAK"
+
     positive = [
         "faktur",
         "invoice",
@@ -100,6 +107,24 @@ def classify_invoice_request(text):
     if any(phrase in norm for phrase in positive):
         return "TAK"
     return ""
+
+
+def extract_affiliation_company(text):
+    match = re.search(
+        r"affiliation:\s*name=(.*?)\s+number=",
+        text or "",
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    return " ".join(match.group(1).split()) if match else ""
+
+
+def infer_invoice_source(text):
+    norm = normalize_text(text)
+    if "system zarzadzania obiektem previo" in norm or "numer rezerwacji - previo" in norm:
+        return "Gmail / Previo confirmation"
+    if "booking.com" in norm:
+        return "Gmail / Booking.com email"
+    return "Gmail"
 
 
 def invoice_priority(source, status):
@@ -274,7 +299,8 @@ def main():
 
         tax_id = extract_tax_number(text)
         status = "NIE" if status_raw == "NIE" else ("TAK" if tax_id else "WYMAGA DANYCH")
-        source = "Gmail / Booking.com email"
+        company = extract_affiliation_company(text)
+        source = infer_invoice_source(text)
         message_text = shorten_message(body)
 
         can_replace = invoice_priority(source, status) > invoice_priority(current_source, current_status)
@@ -290,7 +316,7 @@ def main():
         )
         cells = [
             status if can_replace else enriched_status,
-            current_company or "",
+            company if can_replace and company else (current_company or company),
             tax_id if can_replace else (current_tax_id or tax_id),
             source if can_replace else current_source,
             message_text if can_replace else (current_message or message_text),
