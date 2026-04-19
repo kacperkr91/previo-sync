@@ -44,13 +44,12 @@ def normalize_text(value):
 
 
 def clean_tax_number(value):
-    raw = str(value or "").strip()
-    if not raw:
-        return ""
-    digits = re.sub(r"\D", "", raw)
-    if len(digits) >= 10:
-        return digits[:10]
-    return raw
+    digits = re.sub(r"\D", "", str(value or ""))
+    return digits[:10] if len(digits) >= 10 else ""
+
+
+def is_valid_tax_number(value):
+    return bool(clean_tax_number(value))
 
 
 def extract_tax_number(text):
@@ -59,7 +58,7 @@ def extract_tax_number(text):
 
     patterns = [
         r"number\s*=\s*([A-Za-z0-9\- ]{6,30})\s+numbertype\s*=\s*vat",
-        r"(?:nip|vat|tax\s*id|vat\s*id)\s*[:=]?\s*([A-Za-z0-9\- ]{6,30})",
+        r"(?:nip|tax\s*id|vat\s*id)\s*[:=]?\s*([A-Za-z0-9\- ]{6,30})",
         r"\b(\d{3}[- ]?\d{3}[- ]?\d{2}[- ]?\d{2})\b",
     ]
     for pattern in patterns:
@@ -104,7 +103,11 @@ def merge_invoice_info(primary, fallback):
         primary, fallback = fallback, primary
 
     merged = dict(primary)
+    if merged.get("tax_id") and not is_valid_tax_number(merged.get("tax_id")):
+        merged["tax_id"] = ""
     for key in ("company", "tax_id", "message"):
+        if key == "tax_id" and fallback.get(key) and not is_valid_tax_number(fallback.get(key)):
+            continue
         if not merged.get(key) and fallback.get(key):
             merged[key] = fallback[key]
     return merged
@@ -122,10 +125,13 @@ def invoice_info_to_cells(info):
 
 def cells_to_invoice_info(cells):
     cells = (cells or []) + [""] * 5
+    tax_id = str(cells[2] or "").strip()
+    if tax_id and not is_valid_tax_number(tax_id):
+        tax_id = ""
     return {
         "status": str(cells[0] or "").strip(),
         "company": str(cells[1] or "").strip(),
-        "tax_id": str(cells[2] or "").strip(),
+        "tax_id": tax_id,
         "source": str(cells[3] or "").strip(),
         "message": str(cells[4] or "").strip(),
     }
