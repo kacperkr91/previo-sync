@@ -205,12 +205,23 @@ def read_previos_by_reservation(sheet_service):
     return by_reservation
 
 
-def update_invoice_row(sheet_service, row_number, cells):
-    sheet_service.values().update(
+def update_invoice_rows(sheet_service, updates):
+    if not updates:
+        return
+
+    data = [
+        {
+            "range": f"{SHEET_NAME}!Q{row_number}:U{row_number}",
+            "values": [cells],
+        }
+        for row_number, cells in sorted(updates.items())
+    ]
+    sheet_service.values().batchUpdate(
         spreadsheetId=SHEET_ID,
-        range=f"{SHEET_NAME}!Q{row_number}:U{row_number}",
-        valueInputOption="RAW",
-        body={"values": [cells]},
+        body={
+            "valueInputOption": "RAW",
+            "data": data,
+        },
     ).execute()
 
 
@@ -227,6 +238,8 @@ def main():
     matched = 0
     updated = 0
     skipped_no_match = 0
+    pending_updates = {}
+    updated_reservations = set()
 
     for msg_ref in messages:
         msg = gmail.users().messages().get(
@@ -246,6 +259,8 @@ def main():
         reservation_id = extract_reservation_id(text)
         if not reservation_id or reservation_id not in reservations:
             skipped_no_match += 1
+            continue
+        if reservation_id in updated_reservations:
             continue
 
         matched += 1
@@ -280,9 +295,14 @@ def main():
             source if can_replace else current_source,
             message_text if can_replace else (current_message or message_text),
         ]
-        update_invoice_row(sheets, row_info["row"], cells)
+        pending_updates[row_info["row"]] = cells
+        row[16:21] = cells
+        updated_reservations.add(reservation_id)
         updated += 1
-        print(f"Updated invoice info for reservation {reservation_id} at row {row_info['row']}")
+
+    update_invoice_rows(sheets, pending_updates)
+    for row_number in sorted(pending_updates):
+        print(f"Updated invoice info at row {row_number}")
 
     print(
         f"Done. Gmail messages={len(messages)}, matched={matched}, "
