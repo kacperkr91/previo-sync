@@ -52,6 +52,11 @@ def is_valid_tax_number(value):
     return bool(clean_tax_number(value))
 
 
+def is_ignored_company_marker(value):
+    compact = re.sub(r"[^a-z0-9]+", "", normalize_text(value))
+    return compact in {"kasuj", "skasuj", "usun", "usunac", "delete", "remove"}
+
+
 def extract_tax_number(text):
     if not text:
         return ""
@@ -95,10 +100,23 @@ def invoice_priority(info):
     return 1
 
 
+def is_ignored_invoice_info(info):
+    info = info or {}
+    source = normalize_text(info.get("source", ""))
+    return (
+        ("company/name" in source or "recznie" in source or "ręcznie" in source)
+        and is_ignored_company_marker(info.get("company", ""))
+    )
+
+
 def merge_invoice_info(primary, fallback):
     """Keep higher-priority source, but enrich missing company/NIP/message from fallback."""
     primary = primary or {}
     fallback = fallback or {}
+    if is_ignored_invoice_info(primary):
+        primary = {}
+    if is_ignored_invoice_info(fallback):
+        fallback = {}
     if invoice_priority(fallback) > invoice_priority(primary):
         primary, fallback = fallback, primary
 
@@ -128,18 +146,23 @@ def cells_to_invoice_info(cells):
     tax_id = str(cells[2] or "").strip()
     if tax_id and not is_valid_tax_number(tax_id):
         tax_id = ""
-    return {
+    info = {
         "status": str(cells[0] or "").strip(),
         "company": str(cells[1] or "").strip(),
         "tax_id": tax_id,
         "source": str(cells[3] or "").strip(),
         "message": str(cells[4] or "").strip(),
     }
+    if is_ignored_invoice_info(info):
+        return {"status": "", "company": "", "tax_id": "", "source": "", "message": ""}
+    return info
 
 
 def extract_invoice_info(note, company_name):
     note = note or ""
     company_name = (company_name or "").strip()
+    if is_ignored_company_marker(company_name):
+        company_name = ""
     norm = normalize_text(note)
 
     company = extract_affiliation_company(note)
