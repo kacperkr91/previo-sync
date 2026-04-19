@@ -32,8 +32,8 @@ SHEETS_SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 
 GMAIL_QUERY = (
     'newer_than:365d '
-    '(faktura OR fakture OR fakturę OR invoice OR NIP OR "na firmę" OR "na firme" '
-    'OR affiliation OR numbertype)'
+    '("Nowa rezerwacja" OR "System zarządzania obiektem PREVIO" OR PREVIO) '
+    '(affiliation OR numbertype OR "Informacje dodatkowe")'
 )
 
 
@@ -80,33 +80,21 @@ def extract_reservation_id(text):
     return ""
 
 
+def is_previo_new_reservation_email(subject, text):
+    norm = normalize_text(f"{subject}\n{text}")
+    return (
+        "nowa rezerwacja" in norm
+        and (
+            "system zarzadzania obiektem previo" in norm
+            or "numer rezerwacji - previo" in norm
+            or "informacje dodatkowe" in norm
+        )
+    )
+
+
 def classify_invoice_request(text):
     norm = normalize_text(text)
-    negative = [
-        "bez faktur",
-        "nie potrzebuje faktur",
-        "nie chce faktur",
-        "no invoice",
-        "invoice not needed",
-        "without invoice",
-    ]
-    if any(phrase in norm for phrase in negative):
-        return "NIE"
-
     if "affiliation:" in norm and ("numbertype=vat" in norm or "type=company" in norm):
-        return "TAK"
-
-    positive = [
-        "faktur",
-        "invoice",
-        "vat invoice",
-        "nip",
-        "na firme",
-        "dane do faktur",
-        "company invoice",
-        "billing details",
-    ]
-    if any(phrase in norm for phrase in positive):
         return "TAK"
     return ""
 
@@ -121,12 +109,7 @@ def extract_affiliation_company(text):
 
 
 def infer_invoice_source(text):
-    norm = normalize_text(text)
-    if "system zarzadzania obiektem previo" in norm or "numer rezerwacji - previo" in norm:
-        return "Gmail / Previo confirmation"
-    if "booking.com" in norm:
-        return "Gmail / Booking.com email"
-    return "Gmail"
+    return "Gmail / Previo confirmation"
 
 
 def invoice_priority(source, status):
@@ -293,6 +276,9 @@ def main():
         subject = get_header(payload.get("headers", []), "Subject")
         body = payload_to_text(payload)
         text = f"{subject}\n{body}"
+
+        if not is_previo_new_reservation_email(subject, body):
+            continue
 
         status_raw = classify_invoice_request(text)
         if not status_raw:
