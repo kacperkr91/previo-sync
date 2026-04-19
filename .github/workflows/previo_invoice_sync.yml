@@ -37,6 +37,6 @@ jobs:
         env:
           GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
           GOOGLE_SERVICE_ACCOUNT: ${{ secrets.GOOGLE_SERVICE_ACCOUNT }}
-          GMAIL_CLIENT_ID: ${{ secrets.GMAIL_CLIENT_ID }}
-          GMAIL_CLIENT_SECRET: ${{ secrets.GMAIL_CLIENT_SECRET }}
-          GMAIL_REFRESH_TOKEN: ${{ secrets.GMAIL_REFRESH_TOKEN }}
+          INVOICE_GMAIL_CLIENT_ID: ${{ secrets.INVOICE_GMAIL_CLIENT_ID }}
+          INVOICE_GMAIL_CLIENT_SECRET: ${{ secrets.INVOICE_GMAIL_CLIENT_SECRET }}
+          INVOICE_GMAIL_REFRESH_TOKEN: ${{ secrets.INVOICE_GMAIL_REFRESH_TOKEN }}
