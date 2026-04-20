@@ -189,6 +189,105 @@ def cells_to_guest_request_info(cells):
     }
 
 
+def local_tag_name(element):
+    return str(element.tag or "").split("}", 1)[-1]
+
+
+def int_from_text(value):
+    text = str(value or "").strip()
+    return int(text) if re.fullmatch(r"\d{1,3}", text) else 0
+
+
+def extract_guest_count_from_note(note):
+    text = normalize_text(note)
+    patterns = [
+        r"(?:liczba\s+osob|osoby|osob|goscie|gosci|guests|persons|people|pax)\s*[:=\-]?\s*(\d{1,2})",
+        r"(\d{1,2})\s*(?:osob|osoby|gosci|guests|persons|people|pax)\b",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, text)
+        if match:
+            value = int_from_text(match.group(1))
+            if value:
+                return value
+    adults = 0
+    children = 0
+    adult_match = re.search(r"(?:dorosli|adults?)\s*[:=\-]?\s*(\d{1,2})", text)
+    child_match = re.search(r"(?:dzieci|children|kids?)\s*[:=\-]?\s*(\d{1,2})", text)
+    if adult_match:
+        adults = int_from_text(adult_match.group(1))
+    if child_match:
+        children = int_from_text(child_match.group(1))
+    return adults + children
+
+
+def extract_guest_count(res, note=""):
+    candidate_names = {
+        "guestcount",
+        "guestscount",
+        "personcount",
+        "personscount",
+        "peoplecount",
+        "pax",
+        "paxcount",
+        "occupancy",
+        "numberofguests",
+        "numberofpersons",
+        "numberofpeople",
+        "totalguests",
+        "totalpersons",
+        "totalpeople",
+        "guestnumber",
+        "personnumber",
+    }
+    adult_names = {"adults", "adult", "adultcount", "adultsnumber", "numberofadults"}
+    child_names = {"children", "child", "childcount", "childrennumber", "numberofchildren", "kids"}
+
+    adults = 0
+    children = 0
+    repeated_people = 0
+
+    for element in res.iter():
+        name = re.sub(r"[^a-z0-9]", "", normalize_text(local_tag_name(element)))
+        value = int_from_text(element.text)
+        if value:
+            if name in candidate_names:
+                return value
+            if name in adult_names:
+                adults += value
+            elif name in child_names:
+                children += value
+
+        has_identity = any(
+            re.sub(r"[^a-z0-9]", "", normalize_text(local_tag_name(child))) in {"name", "firstname", "lastname", "surname"}
+            for child in list(element)
+        )
+        if name in {"person", "guest"} and has_identity:
+            repeated_people += 1
+
+    if adults or children:
+        return adults + children
+    if repeated_people > 1:
+        return repeated_people
+    return extract_guest_count_from_note(note)
+
+
+def collect_guest_count_debug_tags(res):
+    matches = []
+    keywords = ("guest", "person", "pax", "adult", "child", "occup")
+    for element in res.iter():
+        raw_name = local_tag_name(element)
+        name = normalize_text(raw_name)
+        if not any(keyword in name for keyword in keywords):
+            continue
+        text = " ".join(str(element.text or "").split())
+        child_count = len(list(element))
+        matches.append(f"{raw_name}={text[:40] or '<children:'+str(child_count)+'>'}")
+        if len(matches) >= 20:
+            break
+    return ", ".join(matches)
+
+
 def extract_invoice_info(note, company_name):
     note = note or ""
     company_name = (company_name or "").strip()
@@ -286,36 +385,17 @@ def fetch_reservations():
 def parse_reservations(xml_bytes):
     root = ET.fromstring(xml_bytes)
     rows = []
+    missing_guest_debug = []
 
     for res in root.findall(".//reservation"):
         def t(tag, default=""):
             el = res.find(tag)
             return el.text.strip() if el is not None and el.text else default
 
-        def first_int(*paths):
-            for path in paths:
-                value = t(path)
-                if re.fullmatch(r"\d+", str(value or "").strip()):
-                    return int(value)
-            return 0
-
-        guest_count = first_int(
-            "guestCount",
-            "personCount",
-            "persons",
-            "persons/count",
-            "guest/count",
-            "guest/persons",
-            "numberOfGuests",
-            "numberOfPersons",
-            "occupancy",
-        )
-        if not guest_count:
-            adults = first_int("adults", "adultCount", "persons/adults", "guest/adults")
-            children = first_int("children", "childCount", "persons/children", "guest/children")
-            guest_count = adults + children
-
         note = t("note")
+        guest_count = extract_guest_count(res, note)
+        if not guest_count and len(missing_guest_debug) < 3:
+            missing_guest_debug.append(f"{t('resId') or t('voucher')}: {collect_guest_count_debug_tags(res)}")
         channel = "Własna"
         note_lower = note.lower()
         if "airbnb" in note_lower:
@@ -366,6 +446,11 @@ def parse_reservations(xml_bytes):
                 guest_count or "",
             ]
         )
+
+    if missing_guest_debug:
+        print("Could not detect guest count for sample reservations:")
+        for item in missing_guest_debug:
+            print(f"  {item}")
 
     return rows
 
