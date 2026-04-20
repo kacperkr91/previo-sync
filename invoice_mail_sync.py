@@ -112,11 +112,16 @@ def infer_invoice_source(text):
     return "Gmail / Previo confirmation"
 
 
-def invoice_priority(source, status):
+def invoice_priority(source, status, tax_id=""):
     src = normalize_text(source)
     st = normalize_text(status)
+    has_tax_id = bool(clean_tax_number(tax_id))
     if not st:
         return 0
+    if has_tax_id and ("gmail" in src or "booking.com email" in src or "mail" in src):
+        return 6
+    if has_tax_id and ("previo note" in src or "affiliation" in src or "log" in src):
+        return 5
     if "previo note" in src or "affiliation" in src or "log" in src:
         return 4
     if "gmail" in src or "booking.com email" in src or "mail" in src:
@@ -306,7 +311,11 @@ def main():
         source = infer_invoice_source(text)
         message_text = shorten_message(body)
 
-        can_replace = invoice_priority(source, status) > invoice_priority(current_source, current_status)
+        can_replace = invoice_priority(source, status, tax_id) > invoice_priority(
+            current_source,
+            current_status,
+            current_tax_id,
+        )
         can_enrich_tax_id = bool(tax_id and not current_tax_id)
         can_enrich_message = bool(message_text and not current_message)
         if not can_replace and not can_enrich_tax_id and not can_enrich_message:
