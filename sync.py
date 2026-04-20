@@ -35,6 +35,12 @@ INVOICE_HEADERS = [
     "Źródło faktury",
     "Wiadomość fakturowa",
 ]
+GUEST_REQUEST_HEADERS = [
+    "Łóżeczko",
+    "Krzesełko",
+    "Źródło próśb",
+    "Wiadomość próśb",
+]
 
 
 def normalize_text(value):
@@ -161,6 +167,26 @@ def cells_to_invoice_info(cells):
     if is_ignored_invoice_info(info):
         return {"status": "", "company": "", "tax_id": "", "source": "", "message": ""}
     return info
+
+
+def guest_request_info_to_cells(info):
+    info = info or {}
+    return [
+        info.get("crib", ""),
+        info.get("chair", ""),
+        info.get("source", ""),
+        info.get("message", ""),
+    ]
+
+
+def cells_to_guest_request_info(cells):
+    cells = (cells or []) + [""] * 4
+    return {
+        "crib": str(cells[0] or "").strip(),
+        "chair": str(cells[1] or "").strip(),
+        "source": str(cells[2] or "").strip(),
+        "message": str(cells[3] or "").strip(),
+    }
 
 
 def extract_invoice_info(note, company_name):
@@ -313,6 +339,7 @@ def parse_reservations(xml_bytes):
                 company_name,
                 datetime.now().strftime("%Y-%m-%d %H:%M"),
                 *invoice_info_to_cells(invoice_info),
+                *guest_request_info_to_cells({}),
             ]
         )
 
@@ -340,37 +367,40 @@ def ensure_sheet_exists(service):
         print(f"Created sheet: {SHEET_NAME}")
 
 
-def read_existing_invoice_map(service):
+def read_existing_maps(service):
     try:
         result = service.values().get(
             spreadsheetId=SHEET_ID,
-            range=f"{SHEET_NAME}!A2:U",
+            range=f"{SHEET_NAME}!A2:Y",
         ).execute()
     except Exception:
-        return {}
+        return {}, {}
 
     invoice_map = {}
+    request_map = {}
     for row in result.get("values", []):
-        row = row + [""] * 21
+        row = row + [""] * 25
         res_id = str(row[0] or "").strip()
         voucher = str(row[1] or "").strip()
         info = cells_to_invoice_info(row[16:21])
-        if not info.get("status"):
-            continue
+        request_info = cells_to_guest_request_info(row[21:25])
         for key in (res_id, voucher):
-            if key:
+            if key and info.get("status"):
                 invoice_map[key] = info
-    return invoice_map
+            if key and (request_info.get("crib") or request_info.get("chair")):
+                request_map[key] = request_info
+    return invoice_map, request_map
 
 
-def apply_existing_invoice_data(rows, existing_invoice_map):
+def apply_existing_data(rows, existing_invoice_map, existing_request_map):
     merged_rows = []
     for row in rows:
-        row = row + [""] * (21 - len(row))
+        row = row + [""] * (25 - len(row))
         current = cells_to_invoice_info(row[16:21])
         existing = existing_invoice_map.get(str(row[0]).strip()) or existing_invoice_map.get(str(row[1]).strip())
         merged = merge_invoice_info(current, existing)
-        merged_rows.append(row[:16] + invoice_info_to_cells(merged))
+        request = existing_request_map.get(str(row[0]).strip()) or existing_request_map.get(str(row[1]).strip()) or {}
+        merged_rows.append(row[:16] + invoice_info_to_cells(merged) + guest_request_info_to_cells(request))
     return merged_rows
 
 
@@ -393,11 +423,12 @@ def write_to_sheets(service, rows):
         "Firma",
         "Ostatnia aktualizacja",
         *INVOICE_HEADERS,
+        *GUEST_REQUEST_HEADERS,
     ]
 
     service.values().clear(
         spreadsheetId=SHEET_ID,
-        range=f"{SHEET_NAME}!A:U",
+        range=f"{SHEET_NAME}!A:Y",
     ).execute()
 
     service.values().update(
@@ -418,8 +449,8 @@ def main():
 
     service = get_sheets_service()
     ensure_sheet_exists(service)
-    existing_invoice_map = read_existing_invoice_map(service)
-    rows = apply_existing_invoice_data(rows, existing_invoice_map)
+    existing_invoice_map, existing_request_map = read_existing_maps(service)
+    rows = apply_existing_data(rows, existing_invoice_map, existing_request_map)
     write_to_sheets(service, rows)
     print("Done!")
 
