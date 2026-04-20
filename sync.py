@@ -89,8 +89,13 @@ def extract_affiliation_company(note):
 def invoice_priority(info):
     source = normalize_text(info.get("source", ""))
     status = normalize_text(info.get("status", ""))
+    has_tax_id = is_valid_tax_number(info.get("tax_id", ""))
     if not status:
         return 0
+    if has_tax_id and ("gmail" in source or "mail" in source or "booking.com email" in source):
+        return 6
+    if has_tax_id and ("previo note" in source or "log" in source or "affiliation" in source):
+        return 5
     if "previo note" in source or "log" in source or "affiliation" in source:
         return 4
     if "gmail" in source or "mail" in source or "booking.com email" in source:
