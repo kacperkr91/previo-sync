@@ -292,6 +292,29 @@ def parse_reservations(xml_bytes):
             el = res.find(tag)
             return el.text.strip() if el is not None and el.text else default
 
+        def first_int(*paths):
+            for path in paths:
+                value = t(path)
+                if re.fullmatch(r"\d+", str(value or "").strip()):
+                    return int(value)
+            return 0
+
+        guest_count = first_int(
+            "guestCount",
+            "personCount",
+            "persons",
+            "persons/count",
+            "guest/count",
+            "guest/persons",
+            "numberOfGuests",
+            "numberOfPersons",
+            "occupancy",
+        )
+        if not guest_count:
+            adults = first_int("adults", "adultCount", "persons/adults", "guest/adults")
+            children = first_int("children", "childCount", "persons/children", "guest/children")
+            guest_count = adults + children
+
         note = t("note")
         channel = "Własna"
         note_lower = note.lower()
@@ -340,6 +363,7 @@ def parse_reservations(xml_bytes):
                 datetime.now().strftime("%Y-%m-%d %H:%M"),
                 *invoice_info_to_cells(invoice_info),
                 *guest_request_info_to_cells({}),
+                guest_count or "",
             ]
         )
 
@@ -371,7 +395,7 @@ def read_existing_maps(service):
     try:
         result = service.values().get(
             spreadsheetId=SHEET_ID,
-            range=f"{SHEET_NAME}!A2:Y",
+            range=f"{SHEET_NAME}!A2:Z",
         ).execute()
     except Exception:
         return {}, {}
@@ -379,7 +403,7 @@ def read_existing_maps(service):
     invoice_map = {}
     request_map = {}
     for row in result.get("values", []):
-        row = row + [""] * 25
+        row = row + [""] * 26
         res_id = str(row[0] or "").strip()
         voucher = str(row[1] or "").strip()
         info = cells_to_invoice_info(row[16:21])
@@ -395,12 +419,12 @@ def read_existing_maps(service):
 def apply_existing_data(rows, existing_invoice_map, existing_request_map):
     merged_rows = []
     for row in rows:
-        row = row + [""] * (25 - len(row))
+        row = row + [""] * (26 - len(row))
         current = cells_to_invoice_info(row[16:21])
         existing = existing_invoice_map.get(str(row[0]).strip()) or existing_invoice_map.get(str(row[1]).strip())
         merged = merge_invoice_info(current, existing)
         request = existing_request_map.get(str(row[0]).strip()) or existing_request_map.get(str(row[1]).strip()) or {}
-        merged_rows.append(row[:16] + invoice_info_to_cells(merged) + guest_request_info_to_cells(request))
+        merged_rows.append(row[:16] + invoice_info_to_cells(merged) + guest_request_info_to_cells(request) + [row[25]])
     return merged_rows
 
 
@@ -424,11 +448,12 @@ def write_to_sheets(service, rows):
         "Ostatnia aktualizacja",
         *INVOICE_HEADERS,
         *GUEST_REQUEST_HEADERS,
+        "Osoby",
     ]
 
     service.values().clear(
         spreadsheetId=SHEET_ID,
-        range=f"{SHEET_NAME}!A:Y",
+        range=f"{SHEET_NAME}!A:Z",
     ).execute()
 
     service.values().update(
