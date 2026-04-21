@@ -289,14 +289,14 @@ def update_tab_date(service):
 
 # ── MANUAL DATA CHECK ────────────────────────────────────
 def has_manual_data(service):
-    """Check if today's tab already has manually entered data (col N = Nr rachunku)"""
+    """Check if today's tab already has manual data in dopłaty/rachunki/notatki."""
     try:
         result = service.values().get(
             spreadsheetId=DAILY_SHEET_ID,
-            range=f"'{TAB_NAME}'!N3:N50"
+            range=f"'{TAB_NAME}'!L3:N50"
         ).execute()
         values = result.get('values', [])
-        return any(row and row[0].strip() for row in values)
+        return any(any(str(cell).strip() for cell in row) for row in values)
     except:
         return False
 
@@ -385,9 +385,9 @@ def main():
         ).execute()
         print(f"Set red NIEGOTOWE status in Q11 and red tab color")
 
-    # If tab already had manual data (rachunki) before this run — skip to protect
+    # If tab already had manual data (dopłaty/rachunki) before this run — skip to protect.
     if tab_existed and has_manual_data(service):
-        print(f"Tab '{TAB_NAME}' has manual data (rachunki) — skipping to protect your data.")
+        print(f"Tab '{TAB_NAME}' has manual data in L:N — skipping to protect your data.")
         return
 
     # Fetch from Previo
