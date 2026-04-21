@@ -41,6 +41,11 @@ BOOKING_GUEST_REQUEST_QUERY = (
     '("łóżeczko" OR lozeczko OR lozeczka OR crib OR cot OR "baby cot" OR '
     '"krzesełko" OR krzeselko OR krzeselka OR "high chair")'
 )
+BOOKING_INVOICE_QUERY = (
+    'newer_than:365d from:(guest.booking.com) '
+    '(faktura OR fakture OR fakturę OR faktury OR invoice OR "VAT invoice" OR '
+    'NIP OR VAT OR "tax id" OR "vat id")'
+)
 
 
 def normalize_text(value):
@@ -105,6 +110,30 @@ def classify_invoice_request(text):
     return ""
 
 
+def classify_booking_invoice_request(text):
+    norm = normalize_text(text)
+    negative_patterns = (
+        "bez faktur",
+        "bez faktury",
+        "nie potrzebuje faktur",
+        "nie chce faktur",
+        "no invoice",
+        "invoice not needed",
+        "without invoice",
+    )
+    if any(pattern in norm for pattern in negative_patterns):
+        return ""
+    positive_patterns = (
+        "faktur",
+        "invoice",
+        "vat invoice",
+        "nip",
+        "tax id",
+        "vat id",
+    )
+    return "TAK" if any(pattern in norm for pattern in positive_patterns) else ""
+
+
 def classify_guest_request(text):
     norm = normalize_text(text)
     has_crib = any(
@@ -142,20 +171,28 @@ def infer_invoice_source(text):
     return "Gmail / Previo confirmation"
 
 
+def infer_booking_invoice_source(text):
+    return "Gmail / Booking guest message"
+
+
 def invoice_priority(source, status, tax_id=""):
     src = normalize_text(source)
     st = normalize_text(status)
     has_tax_id = bool(clean_tax_number(tax_id))
     if not st:
         return 0
-    if has_tax_id and ("gmail" in src or "booking.com email" in src or "mail" in src):
+    if has_tax_id and ("previo confirmation" in src or "previo note" in src or "affiliation" in src or "log" in src):
         return 6
-    if has_tax_id and ("previo note" in src or "affiliation" in src or "log" in src):
+    if has_tax_id and ("booking guest" in src or "booking.com email" in src):
         return 5
-    if "previo note" in src or "affiliation" in src or "log" in src:
+    if has_tax_id and ("gmail" in src or "mail" in src):
         return 4
-    if "gmail" in src or "booking.com email" in src or "mail" in src:
+    if "previo confirmation" in src or "previo note" in src or "affiliation" in src or "log" in src:
+        return 4
+    if "booking guest" in src or "booking.com email" in src:
         return 3
+    if "gmail" in src or "mail" in src:
+        return 2
     if "recznie" in src or "company/name" in src:
         return 2
     return 1
@@ -334,11 +371,43 @@ def merge_message(current, incoming, limit=500):
     return shorten_message(f"{current} | {incoming}")[:limit]
 
 
+def build_invoice_cells(row, status, company, tax_id, source, message_text):
+    current_status = row[16]
+    current_company = row[17]
+    current_tax_id = row[18]
+    current_source = row[19]
+    current_message = row[20]
+
+    can_replace = invoice_priority(source, status, tax_id) > invoice_priority(
+        current_source,
+        current_status,
+        current_tax_id,
+    )
+    can_enrich_tax_id = bool(tax_id and not current_tax_id)
+    can_enrich_message = bool(message_text and message_text not in current_message)
+    if not can_replace and not can_enrich_tax_id and not can_enrich_message:
+        return None
+
+    enriched_status = (
+        "TAK"
+        if can_enrich_tax_id and "wymaga" in normalize_text(current_status)
+        else current_status
+    )
+    return [
+        status if can_replace else enriched_status,
+        company if can_replace and company else (current_company or company),
+        tax_id if can_replace else (current_tax_id or tax_id),
+        source if can_replace else (current_source or source),
+        message_text if can_replace else merge_message(current_message, message_text),
+    ]
+
+
 def main():
     gmail = gmail_service()
     sheets = sheets_service()
     reservations = read_previos_by_reservation(sheets)
     invoice_messages = list_gmail_messages(gmail, GMAIL_QUERY)
+    booking_invoice_messages = list_gmail_messages(gmail, BOOKING_INVOICE_QUERY)
     guest_request_messages = list_gmail_messages(gmail, BOOKING_GUEST_REQUEST_QUERY)
 
     matched = 0
@@ -375,11 +444,6 @@ def main():
         matched += 1
         row_info = reservations[reservation_id]
         row = row_info["values"]
-        current_status = row[16]
-        current_company = row[17]
-        current_tax_id = row[18]
-        current_source = row[19]
-        current_message = row[20]
 
         tax_id = extract_tax_number(text)
         status = "NIE" if status_raw == "NIE" else ("TAK" if tax_id else "WYMAGA DANYCH")
@@ -387,32 +451,60 @@ def main():
         source = infer_invoice_source(text)
         message_text = shorten_message(body)
 
-        can_replace = invoice_priority(source, status, tax_id) > invoice_priority(
-            current_source,
-            current_status,
-            current_tax_id,
-        )
-        can_enrich_tax_id = bool(tax_id and not current_tax_id)
-        can_enrich_message = bool(message_text and not current_message)
-        if not can_replace and not can_enrich_tax_id and not can_enrich_message:
+        cells = build_invoice_cells(row, status, company, tax_id, source, message_text)
+        if not cells:
             continue
 
-        enriched_status = (
-            "TAK"
-            if can_enrich_tax_id and "wymaga" in normalize_text(current_status)
-            else current_status
-        )
-        cells = [
-            status if can_replace else enriched_status,
-            company if can_replace and company else (current_company or company),
-            tax_id if can_replace else (current_tax_id or tax_id),
-            source if can_replace else current_source,
-            message_text if can_replace else (current_message or message_text),
-        ]
         pending_updates[row_info["row"]] = cells
         row[16:21] = cells
         updated_reservations.add(reservation_id)
         updated += 1
+
+    booking_invoice_matched = 0
+    booking_invoice_updated = 0
+    booking_invoice_skipped_no_match = 0
+
+    for msg_ref in booking_invoice_messages:
+        msg = gmail.users().messages().get(
+            userId="me",
+            id=msg_ref["id"],
+            format="full",
+        ).execute()
+        payload = msg.get("payload", {})
+        headers = payload.get("headers", [])
+        subject = get_header(headers, "Subject")
+        sender = get_header(headers, "From")
+        body = payload_to_text(payload)
+        text = f"{subject}\n{body}"
+
+        if "guest.booking.com" not in normalize_text(sender):
+            continue
+
+        status_raw = classify_booking_invoice_request(text)
+        if not status_raw:
+            continue
+
+        reservation_id = extract_reservation_id(text)
+        if not reservation_id or reservation_id not in reservations:
+            booking_invoice_skipped_no_match += 1
+            continue
+
+        booking_invoice_matched += 1
+        row_info = reservations[reservation_id]
+        row = row_info["values"]
+        tax_id = extract_tax_number(text)
+        status = "TAK" if tax_id else "WYMAGA DANYCH"
+        company = extract_affiliation_company(text)
+        source = infer_booking_invoice_source(text)
+        message_text = shorten_message(body)
+
+        cells = build_invoice_cells(row, status, company, tax_id, source, message_text)
+        if not cells:
+            continue
+
+        pending_updates[row_info["row"]] = cells
+        row[16:21] = cells
+        booking_invoice_updated += 1
 
     update_invoice_rows(sheets, pending_updates)
     for row_number in sorted(pending_updates):
@@ -476,6 +568,10 @@ def main():
     print(
         f"Done. invoice_messages={len(invoice_messages)}, invoice_matched={matched}, "
         f"invoice_updated={updated}, invoice_skipped_no_match={skipped_no_match}, "
+        f"booking_invoice_messages={len(booking_invoice_messages)}, "
+        f"booking_invoice_matched={booking_invoice_matched}, "
+        f"booking_invoice_updated={booking_invoice_updated}, "
+        f"booking_invoice_skipped_no_match={booking_invoice_skipped_no_match}, "
         f"guest_messages={len(guest_request_messages)}, guest_matched={guest_matched}, "
         f"guest_updated={guest_updated}, guest_skipped_no_match={guest_skipped_no_match}, "
         f"at={datetime.now().isoformat(timespec='seconds')}"
