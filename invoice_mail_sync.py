@@ -59,18 +59,59 @@ def clean_tax_number(value):
     return digits[:10] if len(digits) >= 10 else ""
 
 
-def extract_tax_number(text):
+def is_plausible_polish_tax_number(value):
+    digits = clean_tax_number(value)
+    if len(digits) != 10:
+        return False
+    weights = [6, 5, 7, 2, 3, 4, 5, 6, 7]
+    checksum = sum(int(digits[i]) * weights[i] for i in range(9)) % 11
+    return checksum != 10 and checksum == int(digits[9])
+
+
+def extract_tax_number(text, allow_loose=False):
     patterns = [
         r"number\s*=\s*([A-Za-z0-9\- ]{6,30})\s+numbertype\s*=\s*vat",
         r"(?:nip|vat|tax\s*id|vat\s*id)\s*[:=]?\s*([A-Za-z0-9\- ]{6,30})",
-        r"\b(\d{3}[- ]?\d{3}[- ]?\d{2}[- ]?\d{2})\b",
     ]
+    if allow_loose:
+        patterns.append(r"\b(\d{3}[- ]?\d{3}[- ]?\d{2}[- ]?\d{2})\b")
     for pattern in patterns:
         match = re.search(pattern, text or "", flags=re.IGNORECASE)
         if match:
             tax_id = clean_tax_number(match.group(1))
             if tax_id:
                 return tax_id
+    return ""
+
+
+def extract_booking_guest_message(text):
+    raw = str(text or "")
+    markers = [
+        r"\bpisze\s*:",
+        r"\bwrites\s*:",
+        r"\bnapisał(?:a)?\s*:",
+    ]
+    for marker in markers:
+        matches = list(re.finditer(marker, raw, flags=re.IGNORECASE))
+        if matches:
+            return raw[matches[-1].end():].strip()
+    return raw
+
+
+def extract_booking_guest_tax_number(text, reservation_id=""):
+    guest_text = extract_booking_guest_message(text)
+    tax_id = extract_tax_number(guest_text, allow_loose=False)
+    if tax_id and tax_id != clean_tax_number(reservation_id):
+        return tax_id
+
+    # In Booking guest messages the actual request often starts after "X pisze:".
+    # Only in that guest-authored part do we allow a loose Polish NIP pattern.
+    for match in re.finditer(r"\b(\d{3}[- ]?\d{3}[- ]?\d{2}[- ]?\d{2})\b", guest_text):
+        candidate = clean_tax_number(match.group(1))
+        if candidate == clean_tax_number(reservation_id):
+            continue
+        if is_plausible_polish_tax_number(candidate):
+            return candidate
     return ""
 
 
@@ -445,7 +486,7 @@ def main():
         row_info = reservations[reservation_id]
         row = row_info["values"]
 
-        tax_id = extract_tax_number(text)
+        tax_id = extract_tax_number(text, allow_loose=True)
         status = "NIE" if status_raw == "NIE" else ("TAK" if tax_id else "WYMAGA DANYCH")
         company = extract_affiliation_company(text)
         source = infer_invoice_source(text)
@@ -492,7 +533,7 @@ def main():
         booking_invoice_matched += 1
         row_info = reservations[reservation_id]
         row = row_info["values"]
-        tax_id = extract_tax_number(text)
+        tax_id = extract_booking_guest_tax_number(text, reservation_id)
         status = "TAK" if tax_id else "WYMAGA DANYCH"
         company = extract_affiliation_company(text)
         source = infer_booking_invoice_source(text)
