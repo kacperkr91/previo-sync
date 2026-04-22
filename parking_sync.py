@@ -40,13 +40,41 @@ HEADER_ROW = ["Data maila", "L.P.", "Nr biletu", "Wazny do",
 
 # ── GMAIL AUTH ───────────────────────────────────────────
 def get_gmail_token():
-    resp = requests.post("https://oauth2.googleapis.com/token", data={
-        "client_id":     GMAIL_CLIENT_ID,
-        "client_secret": GMAIL_CLIENT_SECRET,
-        "refresh_token": GMAIL_REFRESH_TOKEN,
-        "grant_type":    "refresh_token",
-    })
-    resp.raise_for_status()
+    missing = [
+        name for name, value in (
+            ("GMAIL_CLIENT_ID", GMAIL_CLIENT_ID),
+            ("GMAIL_CLIENT_SECRET", GMAIL_CLIENT_SECRET),
+            ("GMAIL_REFRESH_TOKEN", GMAIL_REFRESH_TOKEN),
+        )
+        if not str(value or "").strip()
+    ]
+    if missing:
+        raise RuntimeError(f"Brakuje sekretow Gmail OAuth: {', '.join(missing)}")
+
+    resp = requests.post(
+        "https://oauth2.googleapis.com/token",
+        data={
+            "client_id":     GMAIL_CLIENT_ID,
+            "client_secret": GMAIL_CLIENT_SECRET,
+            "refresh_token": GMAIL_REFRESH_TOKEN,
+            "grant_type":    "refresh_token",
+        },
+        timeout=30,
+    )
+    if not resp.ok:
+        try:
+            err = resp.json()
+        except Exception:
+            err = {"raw": resp.text[:500]}
+        print("Gmail token error:", json.dumps(err, ensure_ascii=False))
+        hint = {
+            "invalid_grant": "Refresh token jest niewazny/cofniety albo wygasl. Wygeneruj nowy GMAIL_REFRESH_TOKEN.",
+            "invalid_client": "GMAIL_CLIENT_ID lub GMAIL_CLIENT_SECRET nie pasuje do refresh tokena.",
+            "invalid_request": "Brakuje parametru OAuth albo jeden z sekretow jest pusty.",
+        }.get(err.get("error"))
+        if hint:
+            print("Wskazowka:", hint)
+        resp.raise_for_status()
     return resp.json()["access_token"]
 
 def gmail_search(token, query, max_results=1):
