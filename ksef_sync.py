@@ -4,14 +4,6 @@ ksef_sync.py
 ------------
 Pobiera faktury zakupowe z KSeF API i zapisuje do Google Sheets (zakładka 'KSeF').
 Uruchamiany przez GitHub Actions raz dziennie.
-
-Wymagane secrets w GitHub (repo previo-sync):
-  KSEF_TOKEN              — token wygenerowany w Aplikacji Podatnika KSeF 2.0
-  KSEF_SPREADSHEET_ID     — ID arkusza Google Sheets (może być ten sam co Previo)
-  GS_SA_JSON_B64          — Service Account JSON (base64) z uprawnieniami do zapisu
-
-Zakładka 'KSeF' w arkuszu będzie zawierać kolumny:
-  NumerKSeF | DataWystawienia | Sprzedawca | NIP Sprzedawcy | Netto | VAT | Brutto | TerminPlatnosci | DniDoPlatnosci | Alert
 """
 
 import os
@@ -23,23 +15,17 @@ from datetime import datetime, date, timedelta
 
 # ── CONFIG ──────────────────────────────────────────────────────────────────
 NIP                  = "6793324449"
-KSEF_API_BASE        = "https://api.ksef.mf.gov.pl/api/v2"    # produkcja KSeF 2.0
-# KSEF_API_BASE      = "https://api-test.ksef.mf.gov.pl/api/v2"  # test
+KSEF_API_BASE        = "https://api.ksef.mf.gov.pl/api/v2"
 SHEET_NAME           = "KSeF"
 SPREADSHEET_ID       = os.environ["KSEF_SPREADSHEET_ID"]
 KSEF_TOKEN           = os.environ["KSEF_TOKEN"]
 GS_SA_JSON_B64       = os.environ.get("GS_SA_JSON_B64", "")
-ALERT_DAYS           = 7   # alert jeśli termin płatności za mniej niż 7 dni
-XML_FETCH_DELAY_SEC  = 6   # bezpieczny odstęp między pobraniami XML z KSeF
+ALERT_DAYS           = 7
+XML_FETCH_DELAY_SEC  = 6
 
 
 # ── KSEF AUTH ────────────────────────────────────────────────────────────────
 def ksef_init_session():
-    """
-    Tworzy i zwraca (client, access_token).
-    Jeden klient na cały przebieg skryptu — KSeF 2.0 wiąże token z sesją.
-    Caller odpowiada za zamknięcie przez ksef_terminate_session().
-    """
     try:
         from ksef_client import KsefClient, KsefClientOptions, KsefEnvironment, models as m
         from ksef_client.services import AuthCoordinator
@@ -64,7 +50,6 @@ def ksef_init_session():
 
 
 def ksef_terminate_session(client, access_token):
-    """Wyloguj z KSeF i zamknij klienta SDK."""
     try:
         requests.delete(
             f"{KSEF_API_BASE}/auth/session",
@@ -78,12 +63,62 @@ def ksef_terminate_session(client, access_token):
         pass
 
 
+# ── DEBUG RAW REQUEST ────────────────────────────────────────────────────────
+def ksef_debug_raw_query(access_token, date_from, date_to):
+    """Wysyła surowe requesty do KSeF żeby zobaczyć dokładny błąd API."""
+    print("\n── DEBUG RAW REQUEST ──")
+    print(f"  date_from: {date_from}")
+    print(f"  date_to:   {date_to}")
+
+    # Próba 1: async init endpoint
+    try:
+        resp = requests.post(
+            f"{KSEF_API_BASE}/invoice/query/invoice/async/init",
+            headers={
+                "Authorization": f"Bearer {access_token}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "queryCriteria": {
+                    "subjectType": "subject2",
+                    "type": "incremental",
+                    "acquisitionTimestampThresholdFrom": date_from + ".000Z",
+                    "acquisitionTimestampThresholdTo":   date_to   + ".000Z",
+                }
+            }
+        )
+        print(f"  async/init → status: {resp.status_code}")
+        print(f"  body: {resp.text[:1000]}")
+    except Exception as e:
+        print(f"  async/init → exception: {e}")
+
+    # Próba 2: sync query endpoint
+    try:
+        resp2 = requests.post(
+            f"{KSEF_API_BASE}/invoice/query/invoice/sync",
+            headers={
+                "Authorization": f"Bearer {access_token}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "queryCriteria": {
+                    "subjectType": "subject2",
+                    "type": "incremental",
+                    "acquisitionTimestampThresholdFrom": date_from + ".000Z",
+                    "acquisitionTimestampThresholdTo":   date_to   + ".000Z",
+                }
+            }
+        )
+        print(f"  sync → status: {resp2.status_code}")
+        print(f"  body: {resp2.text[:1000]}")
+    except Exception as e:
+        print(f"  sync → exception: {e}")
+
+    print("── END DEBUG ──\n")
+
+
 # ── POBIERANIE FAKTUR ────────────────────────────────────────────────────────
 def ksef_query_invoices(client, access_token, date_from=None, date_to=None):
-    """
-    Pobiera listę faktur zakupowych (jako nabywca) z KSeF 2.0.
-    Używa przekazanego, aktywnego klienta SDK.
-    """
     from ksef_client.models import InvoiceQuerySubjectType, InvoiceQueryDateType
 
     if not date_from:
@@ -96,15 +131,27 @@ def ksef_query_invoices(client, access_token, date_from=None, date_to=None):
     page_size = 100
 
     while True:
-        resp = client.invoices.query_invoice_metadata_by_date_range(
-            subject_type=InvoiceQuerySubjectType.SUBJECT2,  # jako nabywca
-            date_type=InvoiceQueryDateType.ISSUE,
-            date_from=date_from,
-            date_to=date_to,
-            access_token=access_token,
-            page_offset=page_offset,
-            page_size=page_size,
-        )
+        try:
+            resp = client.invoices.query_invoice_metadata_by_date_range(
+                subject_type=InvoiceQuerySubjectType.SUBJECT2,
+                date_type=InvoiceQueryDateType.ISSUE,
+                date_from=date_from,
+                date_to=date_to,
+                access_token=access_token,
+                page_offset=page_offset,
+                page_size=page_size,
+            )
+        except Exception as e:
+            print(f"\n⚠️  SDK query błąd: {type(e).__name__}: {e}")
+            for attr in ('response', 'detail', 'message', 'body', 'content'):
+                val = getattr(e, attr, None)
+                if val is not None:
+                    try:
+                        print(f"   e.{attr}: {val.text[:500] if hasattr(val, 'text') else str(val)[:500]}")
+                    except Exception:
+                        pass
+            raise
+
         batch = resp.invoices or []
         all_invoices.extend(batch)
         if len(batch) < page_size or not getattr(resp, 'has_more', False):
@@ -124,7 +171,6 @@ def to_ksef_datetime_range_end(day_value):
 
 
 def ksef_get_invoice_xml(client, access_token, ksef_number):
-    """Pobiera XML faktury po numerze KSeF 2.0. Używa przekazanego klienta."""
     result = client.invoices.get_invoice_bytes(
         ksef_number,
         access_token=access_token,
@@ -133,20 +179,14 @@ def ksef_get_invoice_xml(client, access_token, ksef_number):
 
 
 def parse_invoice_xml(xml_bytes):
-    """
-    Parsuje XML FA(2)/FA(3) i wyciąga kluczowe pola.
-    Obsługuje namespace FA(3) i FA(2).
-    """
     try:
         root = ET.fromstring(xml_bytes)
     except ET.ParseError:
         return {}
 
-    # Wykryj namespace
     ns_uri = root.tag.split('}')[0].strip('{') if '}' in root.tag else ""
 
     def find(path):
-        """Szukaj przez XPath z namespace."""
         try:
             real_path = path.replace("fa:", f"{{{ns_uri}}}" if ns_uri else "")
             el = root.find(real_path)
@@ -190,23 +230,19 @@ def parse_invoice_xml(xml_bytes):
     def find_partial_payment_completion_date():
         partial_dates = []
         partial_payment_flag = ""
-
         for el in root.iter():
             name = local_name(el.tag)
             text = (el.text or "").strip()
             if not text:
                 continue
-
             if name == "ZnacznikZaplatyCzesciowej" and not partial_payment_flag:
                 partial_payment_flag = text
             elif name == "DataZaplatyCzesciowej":
                 parsed = parse_iso_date(text)
                 if parsed:
                     partial_dates.append(parsed)
-
         if partial_payment_flag == "2" and partial_dates:
             return max(partial_dates).isoformat()
-
         return ""
 
     def is_marked_as_paid():
@@ -227,15 +263,12 @@ def parse_invoice_xml(xml_bytes):
         base_date = parse_iso_date(issue_date_text)
         if not base_date:
             return ""
-
         for el in root.iter():
             if local_name(el.tag) != "TerminPlatnosci":
                 continue
-
             quantity = ""
             unit = ""
             event = ""
-
             for child in el.iter():
                 child_name = local_name(child.tag)
                 child_text = (child.text or "").strip()
@@ -247,24 +280,16 @@ def parse_invoice_xml(xml_bytes):
                     unit = child_text.lower()
                 elif child_name == "ZdarzeniePoczatkowe" and not event:
                     event = child_text.lower()
-
             if not quantity or not unit:
                 continue
-
             try:
                 amount = int(quantity)
             except ValueError:
                 continue
-
             if event and not any(phrase in event for phrase in (
-                "wystaw",
-                "invoice issue",
-                "issue of the invoice",
-                "data faktury",
-                "invoice date",
+                "wystaw", "invoice issue", "issue of the invoice", "data faktury", "invoice date",
             )):
                 continue
-
             if "day" in unit or "dni" in unit or "dzie" in unit:
                 return (base_date + timedelta(days=amount)).isoformat()
             if "week" in unit or "tygod" in unit:
@@ -277,15 +302,12 @@ def parse_invoice_xml(xml_bytes):
                                  31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
                 day = min(base_date.day, month_lengths[month - 1])
                 return date(year, month, day).isoformat()
-
         return ""
 
-    # Sprzedawca (Podmiot1)
     sprzedawca_nip   = find(".//fa:Podmiot1/fa:DaneIdentyfikacyjne/fa:NIP")
     sprzedawca_nazwa = (find(".//fa:Podmiot1/fa:DaneIdentyfikacyjne/fa:PelnaNazwa") or
                         find(".//fa:Podmiot1/fa:DaneIdentyfikacyjne/fa:Nazwa"))
 
-    # FA(3) używa P_1, P_15 itp. (z podkreślnikiem), FA(2) bez podkreślnika
     p1   = find(".//fa:Fa/fa:P_1")    or find(".//fa:Fa/fa:P1")
     p15  = find(".//fa:Fa/fa:P_15")   or find(".//fa:Fa/fa:P15")
     p16  = find(".//fa:Fa/fa:P_16")   or find(".//fa:Fa/fa:P16")
@@ -360,7 +382,6 @@ def write_to_sheets(rows_data):
     hdrs = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
     base_url = f"https://sheets.googleapis.com/v4/spreadsheets/{SPREADSHEET_ID}"
 
-    # Utwórz zakładkę jeśli nie istnieje
     meta = requests.get(base_url, headers=hdrs, params={"fields": "sheets.properties.title"})
     meta.raise_for_status()
     sheets = [s["properties"]["title"] for s in meta.json().get("sheets", [])]
@@ -374,7 +395,6 @@ def write_to_sheets(rows_data):
         "Nr KSeF", "Data wystawienia", "Sprzedawca", "NIP sprzedawcy",
         "Netto", "VAT", "Brutto", "Termin płatności", "Dni do płatności", "Alert", "Aktualizacja"
     ]
-
     rows = [header_row] + rows_data
 
     requests.post(
@@ -408,12 +428,15 @@ def main():
 
     try:
         date_from = to_ksef_datetime_range_start(date.today() - timedelta(days=60))
-        date_to = to_ksef_datetime_range_end(date.today())
+        date_to   = to_ksef_datetime_range_end(date.today())
+
+        # DEBUG — wyświetla surową odpowiedź API przed wywołaniem SDK
+        ksef_debug_raw_query(access_token, date_from, date_to)
+
         invoices = ksef_query_invoices(ksef_client, access_token, date_from=date_from, date_to=date_to)
 
         import time
 
-        # Wczytaj istniejące dane z arkusza (cache terminów)
         existing = {}
         try:
             token_s = get_sheets_token()
@@ -426,7 +449,7 @@ def main():
             if r_read.ok:
                 for row in r_read.json().get("values", []):
                     if row and len(row) >= 8:
-                        existing[row[0]] = row  # ksef_number -> cały wiersz
+                        existing[row[0]] = row
             print(f"Wczytano {len(existing)} istniejących wierszy z arkusza")
         except Exception as e:
             print(f"Nie udało się wczytać cache: {e}")
@@ -436,7 +459,6 @@ def main():
         today = date.today()
 
         for inv in invoices:
-            # Obsługa SDK dataclass
             if hasattr(inv, 'ksef_number'):
                 ksef_number     = inv.ksef_number or ""
                 inv_date        = (inv.issue_date or "")[:10]
@@ -453,7 +475,6 @@ def main():
                 sprzedawca_meta = inv.get("subjectName", "")
                 nip_meta        = ""
 
-            # Sprawdź cache
             termin_z_cache = ""
             if ksef_number in existing:
                 cached = existing[ksef_number]
@@ -461,7 +482,6 @@ def main():
 
             parsed = {}
             if termin_z_cache:
-                # Mamy termin z cache — użyj go bezpośrednio
                 parsed = {"termin_platnosci": termin_z_cache}
                 cached = existing.get(ksef_number, [])
                 if len(cached) >= 7:
@@ -488,7 +508,6 @@ def main():
             brutto     = parsed.get("brutto", "") or brutto_meta
             termin_str = parsed.get("termin_platnosci", "")
 
-            # Oblicz dni do płatności
             dni_do = ""
             alert  = "NIE"
             if termin_str:
@@ -518,7 +537,6 @@ def main():
             print("Brak faktur zakupowych — nic do zapisania.")
             return
 
-        # Sortuj po terminie płatności
         rows.sort(key=lambda r: str(r[7]) if r[7] else "9999")
 
         alerts = [r for r in rows if r[9] == "TAK"]
