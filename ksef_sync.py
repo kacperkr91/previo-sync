@@ -32,11 +32,13 @@ GS_SA_JSON_B64       = os.environ.get("GS_SA_JSON_B64", "")
 ALERT_DAYS           = 7   # alert jeśli termin płatności za mniej niż 7 dni
 XML_FETCH_DELAY_SEC  = 6   # bezpieczny odstęp między pobraniami XML z KSeF
 
+
 # ── KSEF AUTH ────────────────────────────────────────────────────────────────
-def ksef_get_access_token():
+def ksef_init_session():
     """
-    Autoryzacja KSeF 2.0 przez ksef-client SDK.
-    pip install ksef-client
+    Tworzy i zwraca (client, access_token).
+    Jeden klient na cały przebieg skryptu — KSeF 2.0 wiąże token z sesją.
+    Caller odpowiada za zamknięcie przez ksef_terminate_session().
     """
     try:
         from ksef_client import KsefClient, KsefClientOptions, KsefEnvironment, models as m
@@ -45,24 +47,24 @@ def ksef_get_access_token():
         raise ImportError("Zainstaluj: pip install ksef-client")
 
     options = KsefClientOptions(base_url=KsefEnvironment.PROD.value)
-    with KsefClient(options) as client:
-        # Pobierz certyfikat do szyfrowania tokenu
-        token_cert_pem = client.security.get_public_key_certificate_pem(
-            m.PublicKeyCertificateUsage.KSEFTOKENENCRYPTION,
-        )
-        auth = AuthCoordinator(client.auth).authenticate_with_ksef_token(
-            token=KSEF_TOKEN,
-            public_certificate=token_cert_pem,
-            context_identifier_type="nip",
-            context_identifier_value=NIP,
-        )
-        access_token = auth.access_token
-        print("AccessToken uzyskany przez ksef-client SDK.")
-        return access_token
+    client = KsefClient(options)
+    client.__enter__()
+
+    token_cert_pem = client.security.get_public_key_certificate_pem(
+        m.PublicKeyCertificateUsage.KSEFTOKENENCRYPTION,
+    )
+    auth = AuthCoordinator(client.auth).authenticate_with_ksef_token(
+        token=KSEF_TOKEN,
+        public_certificate=token_cert_pem,
+        context_identifier_type="nip",
+        context_identifier_value=NIP,
+    )
+    print("AccessToken uzyskany przez ksef-client SDK.")
+    return client, auth.access_token
 
 
-def ksef_terminate_session(access_token):
-    """Wyloguj z KSeF."""
+def ksef_terminate_session(client, access_token):
+    """Wyloguj z KSeF i zamknij klienta SDK."""
     try:
         requests.delete(
             f"{KSEF_API_BASE}/auth/session",
@@ -70,14 +72,18 @@ def ksef_terminate_session(access_token):
         )
     except Exception:
         pass
+    try:
+        client.__exit__(None, None, None)
+    except Exception:
+        pass
 
 
 # ── POBIERANIE FAKTUR ────────────────────────────────────────────────────────
-def ksef_query_invoices(access_token, date_from=None, date_to=None):
+def ksef_query_invoices(client, access_token, date_from=None, date_to=None):
     """
-    Pobiera listę faktur zakupowych (jako nabywca) z KSeF 2.0 przez SDK.
+    Pobiera listę faktur zakupowych (jako nabywca) z KSeF 2.0.
+    Używa przekazanego, aktywnego klienta SDK.
     """
-    from ksef_client import KsefClient, KsefClientOptions, KsefEnvironment
     from ksef_client.models import InvoiceQuerySubjectType, InvoiceQueryDateType
 
     if not date_from:
@@ -89,22 +95,21 @@ def ksef_query_invoices(access_token, date_from=None, date_to=None):
     page_offset = 0
     page_size = 100
 
-    with KsefClient(KsefClientOptions(base_url=KsefEnvironment.PROD.value)) as client:
-        while True:
-            resp = client.invoices.query_invoice_metadata_by_date_range(
-                subject_type=InvoiceQuerySubjectType.SUBJECT2,  # jako nabywca
-                date_type=InvoiceQueryDateType.ISSUE,
-                date_from=date_from,
-                date_to=date_to,
-                access_token=access_token,
-                page_offset=page_offset,
-                page_size=page_size,
-            )
-            batch = resp.invoices or []
-            all_invoices.extend(batch)
-            if len(batch) < page_size or not getattr(resp, 'has_more', False):
-                break
-            page_offset += page_size
+    while True:
+        resp = client.invoices.query_invoice_metadata_by_date_range(
+            subject_type=InvoiceQuerySubjectType.SUBJECT2,  # jako nabywca
+            date_type=InvoiceQueryDateType.ISSUE,
+            date_from=date_from,
+            date_to=date_to,
+            access_token=access_token,
+            page_offset=page_offset,
+            page_size=page_size,
+        )
+        batch = resp.invoices or []
+        all_invoices.extend(batch)
+        if len(batch) < page_size or not getattr(resp, 'has_more', False):
+            break
+        page_offset += page_size
 
     print(f"Znaleziono {len(all_invoices)} faktur zakupowych")
     return all_invoices
@@ -118,15 +123,13 @@ def to_ksef_datetime_range_end(day_value):
     return f"{day_value.strftime('%Y-%m-%d')}T23:59:59"
 
 
-def ksef_get_invoice_xml(access_token, ksef_number):
-    """Pobiera XML faktury po numerze KSeF 2.0."""
-    from ksef_client import KsefClient, KsefClientOptions, KsefEnvironment
-    with KsefClient(KsefClientOptions(base_url=KsefEnvironment.PROD.value)) as client:
-        result = client.invoices.get_invoice_bytes(
-            ksef_number,
-            access_token=access_token,
-        )
-        return result.content
+def ksef_get_invoice_xml(client, access_token, ksef_number):
+    """Pobiera XML faktury po numerze KSeF 2.0. Używa przekazanego klienta."""
+    result = client.invoices.get_invoice_bytes(
+        ksef_number,
+        access_token=access_token,
+    )
+    return result.content
 
 
 def parse_invoice_xml(xml_bytes):
@@ -145,7 +148,6 @@ def parse_invoice_xml(xml_bytes):
     def find(path):
         """Szukaj przez XPath z namespace."""
         try:
-            # Zamień fa: na {ns_uri} poprawnie
             real_path = path.replace("fa:", f"{{{ns_uri}}}" if ns_uri else "")
             el = root.find(real_path)
             if el is not None and el.text:
@@ -167,7 +169,6 @@ def parse_invoice_xml(xml_bytes):
         return ""
 
     def find_payment_due_date():
-        # Szukamy po nazwach lokalnych, bo struktura i namespace faktur potrafią się różnić
         for el in root.iter():
             if local_name(el.tag) != "TerminPlatnosci":
                 continue
@@ -272,7 +273,8 @@ def parse_invoice_xml(xml_bytes):
                 month_index = base_date.month - 1 + amount
                 year = base_date.year + month_index // 12
                 month = month_index % 12 + 1
-                month_lengths = [31, 29 if year % 4 == 0 and (year % 100 != 0 or year % 400 == 0) else 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+                month_lengths = [31, 29 if year % 4 == 0 and (year % 100 != 0 or year % 400 == 0) else 28,
+                                 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
                 day = min(base_date.day, month_lengths[month - 1])
                 return date(year, month, day).isoformat()
 
@@ -284,13 +286,11 @@ def parse_invoice_xml(xml_bytes):
                         find(".//fa:Podmiot1/fa:DaneIdentyfikacyjne/fa:Nazwa"))
 
     # FA(3) używa P_1, P_15 itp. (z podkreślnikiem), FA(2) bez podkreślnika
-    p1   = find(".//fa:Fa/fa:P_1")   or find(".//fa:Fa/fa:P1")
-    p15  = find(".//fa:Fa/fa:P_15")  or find(".//fa:Fa/fa:P15")
-    p16  = find(".//fa:Fa/fa:P_16")  or find(".//fa:Fa/fa:P16")
+    p1   = find(".//fa:Fa/fa:P_1")    or find(".//fa:Fa/fa:P1")
+    p15  = find(".//fa:Fa/fa:P_15")   or find(".//fa:Fa/fa:P15")
+    p16  = find(".//fa:Fa/fa:P_16")   or find(".//fa:Fa/fa:P16")
     p13  = find(".//fa:Fa/fa:P_13_1") or find(".//fa:Fa/fa:P13_1")
 
-    # Termin płatności — szukamy w Platnosc/TerminPlatnosci/Termin
-    # Ścieżka może być w <Fa><Platnosc> lub bezpośrednio w <Platnosc>
     termin = (
         find(".//fa:Fa/fa:Platnosc/fa:TerminPlatnosci/fa:Termin") or
         find(".//fa:Platnosc/fa:TerminPlatnosci/fa:Termin") or
@@ -377,7 +377,6 @@ def write_to_sheets(rows_data):
 
     rows = [header_row] + rows_data
 
-    # Wyczyść arkusz przez batchClear, potem zapisz
     requests.post(
         f"https://sheets.googleapis.com/v4/spreadsheets/{SPREADSHEET_ID}/values:batchClear",
         headers=hdrs,
@@ -403,16 +402,14 @@ def main():
     print(f"Data: {datetime.now().strftime('%Y-%m-%d %H:%M')}")
     print(f"NIP: {NIP}")
 
-    # Sesja KSeF
     print("Inicjowanie sesji KSeF...")
-    access_token = ksef_get_access_token()
+    ksef_client, access_token = ksef_init_session()
     print("Sesja aktywna.")
 
     try:
-        # Pobierz faktury z ostatnich 60 dni w pełnym formacie daty/czasu KSeF
         date_from = to_ksef_datetime_range_start(date.today() - timedelta(days=60))
         date_to = to_ksef_datetime_range_end(date.today())
-        invoices = ksef_query_invoices(access_token, date_from=date_from, date_to=date_to)
+        invoices = ksef_query_invoices(ksef_client, access_token, date_from=date_from, date_to=date_to)
 
         import time
 
@@ -462,13 +459,10 @@ def main():
                 cached = existing[ksef_number]
                 termin_z_cache = cached[7] if len(cached) > 7 else ""
 
-            # Pobierz XML dla każdej faktury bez terminu w cache.
-            # Dzięki temu skrypt uzupełnia wszystkie możliwe terminy w jednym uruchomieniu.
             parsed = {}
             if termin_z_cache:
                 # Mamy termin z cache — użyj go bezpośrednio
                 parsed = {"termin_platnosci": termin_z_cache}
-                # Wczytaj też inne pola z cache jeśli dostępne
                 cached = existing.get(ksef_number, [])
                 if len(cached) >= 7:
                     parsed["sprzedawca_nazwa"] = cached[2] if len(cached) > 2 else ""
@@ -479,7 +473,7 @@ def main():
             elif ksef_number:
                 try:
                     time.sleep(XML_FETCH_DELAY_SEC)
-                    xml_bytes = ksef_get_invoice_xml(access_token, ksef_number)
+                    xml_bytes = ksef_get_invoice_xml(ksef_client, access_token, ksef_number)
                     parsed = parse_invoice_xml(xml_bytes)
                     xml_fetched += 1
                     termin_log = parsed.get("termin_platnosci", "") or "BRAK"
@@ -499,7 +493,6 @@ def main():
             alert  = "NIE"
             if termin_str:
                 try:
-                    # Format może być YYYY-MM-DD lub YYYY-MM-DDThh:mm:ss
                     termin_date = date.fromisoformat(termin_str[:10])
                     dni_do = (termin_date - today).days
                     if dni_do <= ALERT_DAYS:
@@ -537,7 +530,7 @@ def main():
         write_to_sheets(rows)
 
     finally:
-        ksef_terminate_session(access_token)
+        ksef_terminate_session(ksef_client, access_token)
         print("Sesja KSeF zamknięta.")
 
 
