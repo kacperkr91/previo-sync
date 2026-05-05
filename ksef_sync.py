@@ -186,6 +186,34 @@ def parse_invoice_xml(xml_bytes):
                     return value
         return ""
 
+    def find_partial_payment_completion_date():
+        partial_dates = []
+        partial_payment_flag = ""
+
+        for el in root.iter():
+            name = local_name(el.tag)
+            text = (el.text or "").strip()
+            if not text:
+                continue
+
+            if name == "ZnacznikZaplatyCzesciowej" and not partial_payment_flag:
+                partial_payment_flag = text
+            elif name == "DataZaplatyCzesciowej":
+                parsed = parse_iso_date(text)
+                if parsed:
+                    partial_dates.append(parsed)
+
+        if partial_payment_flag == "2" and partial_dates:
+            return max(partial_dates).isoformat()
+
+        return ""
+
+    def is_marked_as_paid():
+        for el in root.iter():
+            if local_name(el.tag) == "Zaplacono" and (el.text or "").strip() == "1":
+                return True
+        return False
+
     def parse_iso_date(value):
         if not value:
             return None
@@ -273,7 +301,11 @@ def parse_invoice_xml(xml_bytes):
     if not termin:
         termin = find_due_date_from_description(p1)
     if not termin:
+        termin = find_partial_payment_completion_date()
+    if not termin:
         termin = find_paid_date()
+    if not termin and is_marked_as_paid():
+        termin = p1
 
     return {
         "data_wystawienia": p1,
