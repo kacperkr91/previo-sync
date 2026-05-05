@@ -26,6 +26,7 @@ NIP                  = "6793324449"
 KSEF_API_BASE        = "https://api.ksef.mf.gov.pl/api/v2"    # produkcja KSeF 2.0
 # KSEF_API_BASE      = "https://api-test.ksef.mf.gov.pl/api/v2"  # test
 SHEET_NAME           = "KSeF"
+KSEF_PAID_SHEET_NAME = "KsefPaid"
 SPREADSHEET_ID       = os.environ["KSEF_SPREADSHEET_ID"]
 KSEF_TOKEN           = os.environ["KSEF_TOKEN"]
 GS_SA_JSON_B64       = os.environ.get("GS_SA_JSON_B64", "")
@@ -451,10 +452,89 @@ def get_sheets_token():
     return resp.json()["access_token"]
 
 
+def parse_money_value(value):
+    if value is None:
+        return 0.0
+    raw = str(value).replace(" ", "").replace("\xa0", "").replace(",", ".")
+    cleaned = "".join(ch for ch in raw if ch.isdigit() or ch in ".-")
+    try:
+        return float(cleaned)
+    except Exception:
+        return 0.0
+
+
+def normalize_ksef_paid_entry(entry, brutto_value):
+    if not isinstance(entry, dict):
+        return {"payments": [], "updatedAt": ""}
+
+    payments = entry.get("payments")
+    if not isinstance(payments, list):
+        payments = []
+
+    if not payments and entry.get("paidDate"):
+        fallback_amount = parse_money_value(entry.get("paidAmount")) or max(brutto_value, 0)
+        payments = [{"date": str(entry.get("paidDate") or "").strip(), "amount": fallback_amount}]
+
+    normalized = []
+    for payment in payments:
+        if not isinstance(payment, dict):
+            continue
+        payment_date = str(payment.get("date") or "").strip()
+        payment_amount = max(parse_money_value(payment.get("amount")), 0)
+        if payment_date and payment_amount > 0:
+            normalized.append({"date": payment_date, "amount": payment_amount})
+
+    normalized.sort(key=lambda item: item["date"])
+    return {
+        "payments": normalized,
+        "updatedAt": str(entry.get("updatedAt") or "").strip(),
+    }
+
+
+def build_ksef_paid_summary(entry, brutto_value):
+    normalized = normalize_ksef_paid_entry(entry, brutto_value)
+    paid_amount = sum(item["amount"] for item in normalized["payments"])
+    remaining_amount = max((brutto_value or 0) - paid_amount, 0)
+    latest_paid_date = normalized["payments"][-1]["date"] if normalized["payments"] else ""
+    status = ""
+    if paid_amount > 0:
+        status = "TAK" if remaining_amount <= 0.009 else "CZESCIOWO"
+    return {
+        "status": status,
+        "latestPaidDate": latest_paid_date,
+        "paidAmount": paid_amount,
+        "remainingAmount": remaining_amount,
+    }
+
+
+def read_ksef_paid_map(token):
+    hdrs = {"Authorization": f"Bearer {token}"}
+    url_range = requests.utils.quote(f"{KSEF_PAID_SHEET_NAME}!A2")
+    resp = requests.get(
+        f"https://sheets.googleapis.com/v4/spreadsheets/{SPREADSHEET_ID}/values/{url_range}",
+        headers=hdrs,
+    )
+    if not resp.ok:
+        print(f"Nie udało się wczytać {KSEF_PAID_SHEET_NAME}: {resp.status_code} {resp.text[:300]}")
+        return {}
+
+    values = resp.json().get("values", [])
+    raw = values[0][0] if values and values[0] else ""
+    if not raw:
+        return {}
+    try:
+        data = json.loads(raw)
+        return data if isinstance(data, dict) else {}
+    except Exception as e:
+        print(f"Nie udało się sparsować JSON z {KSEF_PAID_SHEET_NAME}: {e}")
+        return {}
+
+
 def write_to_sheets(rows_data):
     token = get_sheets_token()
     hdrs = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
     base_url = f"https://sheets.googleapis.com/v4/spreadsheets/{SPREADSHEET_ID}"
+    paid_map = read_ksef_paid_map(token)
 
     # Utwórz zakładkę jeśli nie istnieje
     meta = requests.get(base_url, headers=hdrs, params={"fields": "sheets.properties.title"})
@@ -468,23 +548,35 @@ def write_to_sheets(rows_data):
 
     header_row = [
         "Nr KSeF", "Data wystawienia", "Sprzedawca", "NIP sprzedawcy",
-        "Netto", "VAT", "Brutto", "Termin płatności", "Dni do płatności", "Alert", "Aktualizacja"
+        "Netto", "VAT", "Brutto", "Termin płatności", "Dni do płatności", "Alert", "Aktualizacja",
+        "Oplacona", "Data oplaćenia", "Kwota oplacona", "Kwota pozostala"
     ]
 
-    rows = [header_row] + rows_data
+    rows = [header_row]
+    for row in rows_data:
+        ksef_number = str(row[0] or "").strip()
+        brutto_value = parse_money_value(row[6] if len(row) > 6 else 0)
+        summary = build_ksef_paid_summary(paid_map.get(ksef_number), brutto_value)
+        rows.append(row + [
+            summary["status"],
+            summary["latestPaidDate"],
+            summary["paidAmount"] if summary["paidAmount"] > 0 else "",
+            summary["remainingAmount"] if brutto_value > 0 else "",
+        ])
 
-    # Wyczyść arkusz przez batchClear, potem zapisz
+    # Wyczyść arkusz przez batchClear, potem zapisz cały zakres A:O.
+    # Dzięki temu statusy opłacenia nie "zostają" na starych wierszach po sortowaniu.
     requests.post(
         f"https://sheets.googleapis.com/v4/spreadsheets/{SPREADSHEET_ID}/values:batchClear",
         headers=hdrs,
-        json={"ranges": [f"{SHEET_NAME}!A1:K2000"]}
+        json={"ranges": [f"{SHEET_NAME}!A1:O2000"]}
     )
     resp = requests.post(
         f"https://sheets.googleapis.com/v4/spreadsheets/{SPREADSHEET_ID}/values:batchUpdate",
         headers=hdrs,
         json={
             "valueInputOption": "RAW",
-            "data": [{"range": f"{SHEET_NAME}!A1:K2000", "values": rows}]
+            "data": [{"range": f"{SHEET_NAME}!A1:O2000", "values": rows}]
         }
     )
     if not resp.ok:
