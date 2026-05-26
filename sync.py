@@ -6,6 +6,7 @@ Runs via GitHub Actions every hour
 import json
 import os
 import re
+import time
 import unicodedata
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta
@@ -28,6 +29,9 @@ SERVICE_ACCOUNT_JSON = os.environ["GOOGLE_SERVICE_ACCOUNT"]
 DATE_FROM = "2025-01-01"
 DATE_TO = (datetime.now() + timedelta(days=90)).strftime("%Y-%m-%d")
 RESERVATION_LIMIT = 2000
+FETCH_CHUNK_DAYS = 45
+FETCH_MAX_RETRIES = 3
+FETCH_TIMEOUT = (15, 90)
 INVOICE_HEADERS = [
     "Faktura status",
     "Firma do faktury",
@@ -358,28 +362,74 @@ def extract_invoice_info(note, company_name):
     return {"status": "", "company": "", "tax_id": "", "source": "", "message": ""}
 
 
-def fetch_reservations():
+def fetch_reservations_chunk(date_from, date_to):
     xml_body = f"""<?xml version="1.0" encoding="utf-8"?>
 <request>
   <login>{PREVIO_LOGIN}</login>
   <password>{PREVIO_PASS}</password>
   <hotId>{PREVIO_HOT_ID}</hotId>
   <term>
-    <from>{DATE_FROM}</from>
-    <to>{DATE_TO}</to>
+    <from>{date_from}</from>
+    <to>{date_to}</to>
     <termType>check-out</termType>
   </term>
   <limit>{RESERVATION_LIMIT}</limit>
 </request>"""
 
-    resp = requests.post(
-        PREVIO_URL,
-        data=xml_body.encode("utf-8"),
-        headers={"Content-Type": "application/xml"},
-        timeout=30,
-    )
-    resp.raise_for_status()
-    return resp.content
+    last_error = None
+    for attempt in range(1, FETCH_MAX_RETRIES + 1):
+        try:
+            print(f"  Chunk {date_from} -> {date_to} (próba {attempt}/{FETCH_MAX_RETRIES})")
+            resp = requests.post(
+                PREVIO_URL,
+                data=xml_body.encode("utf-8"),
+                headers={"Content-Type": "application/xml"},
+                timeout=FETCH_TIMEOUT,
+            )
+            resp.raise_for_status()
+            return resp.content
+        except requests.exceptions.ReadTimeout as err:
+            last_error = err
+            if attempt == FETCH_MAX_RETRIES:
+                break
+            sleep_seconds = attempt * 10
+            print(f"    Timeout z Previo, ponawiam za {sleep_seconds}s...")
+            time.sleep(sleep_seconds)
+        except requests.exceptions.RequestException as err:
+            last_error = err
+            if attempt == FETCH_MAX_RETRIES:
+                break
+            sleep_seconds = attempt * 5
+            print(f"    Błąd requestu z Previo: {err}. Ponawiam za {sleep_seconds}s...")
+            time.sleep(sleep_seconds)
+    raise last_error
+
+
+def iter_fetch_chunks():
+    start = datetime.strptime(DATE_FROM, "%Y-%m-%d").date()
+    end = datetime.strptime(DATE_TO, "%Y-%m-%d").date()
+    current = start
+    while current <= end:
+        chunk_end = min(current + timedelta(days=FETCH_CHUNK_DAYS - 1), end)
+        yield current.strftime("%Y-%m-%d"), chunk_end.strftime("%Y-%m-%d")
+        current = chunk_end + timedelta(days=1)
+
+
+def fetch_reservations():
+    all_rows = []
+    seen_keys = set()
+    for chunk_from, chunk_to in iter_fetch_chunks():
+        xml_data = fetch_reservations_chunk(chunk_from, chunk_to)
+        chunk_rows = parse_reservations(xml_data)
+        print(f"    Sparsowano {len(chunk_rows)} rezerwacji z tego zakresu")
+        for row in chunk_rows:
+            key = str(row[0] or "").strip() or str(row[1] or "").strip()
+            if key and key in seen_keys:
+                continue
+            if key:
+                seen_keys.add(key)
+            all_rows.append(row)
+    return all_rows
 
 
 def parse_reservations(xml_bytes):
@@ -553,8 +603,7 @@ def write_to_sheets(service, rows):
 
 def main():
     print(f"Fetching reservations {DATE_FROM} - {DATE_TO}...")
-    xml_data = fetch_reservations()
-    rows = parse_reservations(xml_data)
+    rows = fetch_reservations()
     print(f"Parsed {len(rows)} reservations")
 
     service = get_sheets_service()
