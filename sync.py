@@ -29,7 +29,7 @@ SERVICE_ACCOUNT_JSON = os.environ["GOOGLE_SERVICE_ACCOUNT"]
 DATE_FROM = "2025-01-01"
 DATE_TO = (datetime.now() + timedelta(days=90)).strftime("%Y-%m-%d")
 RESERVATION_LIMIT = 2000
-FETCH_CHUNK_DAYS = 45
+FETCH_CHUNK_DAYS = 14
 FETCH_MAX_RETRIES = 3
 FETCH_TIMEOUT = (15, 90)
 INVOICE_HEADERS = [
@@ -422,6 +422,11 @@ def fetch_reservations():
         xml_data = fetch_reservations_chunk(chunk_from, chunk_to)
         chunk_rows = parse_reservations(xml_data)
         print(f"    Sparsowano {len(chunk_rows)} rezerwacji z tego zakresu")
+        if len(chunk_rows) >= RESERVATION_LIMIT:
+            print(
+                f"    UWAGA: chunk {chunk_from} -> {chunk_to} osiągnął limit {RESERVATION_LIMIT}. "
+                "To może oznaczać ucięte dane z Previo."
+            )
         for row in chunk_rows:
             key = str(row[0] or "").strip() or str(row[1] or "").strip()
             if key and key in seen_keys:
