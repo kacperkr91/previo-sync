@@ -24,6 +24,7 @@ PREVIO_HOT_ID = os.environ.get("PREVIO_HOT_ID", "762331")
 SHEET_ID = os.environ["GOOGLE_SHEET_ID"]
 SHEET_NAME = "Previo"
 SERVICE_ACCOUNT_JSON = os.environ["GOOGLE_SERVICE_ACCOUNT"]
+DEBUG_PREVIO_VOUCHER = os.environ.get("DEBUG_PREVIO_VOUCHER", "HMSBNZFK44").strip()
 
 # Fetch reservations by checkout date starting from 2025-01-01.
 DATE_FROM = "2025-01-01"
@@ -305,9 +306,38 @@ def collect_source_debug_tags(res):
             matches.append(f"{raw_name}={text[:120]}")
         else:
             matches.append(f"{raw_name}=<children:{child_count}>")
+        for child in list(element):
+            child_name = local_tag_name(child)
+            child_text = " ".join(str(child.text or "").split())
+            grand_count = len(list(child))
+            if child_text:
+                matches.append(f"{raw_name}/{child_name}={child_text[:120]}")
+            else:
+                matches.append(f"{raw_name}/{child_name}=<children:{grand_count}>")
         if len(matches) >= 30:
             break
     return ", ".join(matches)
+
+
+def flatten_reservation_debug(res, prefix="reservation", limit=200):
+    lines = []
+
+    def walk(element, path):
+        if len(lines) >= limit:
+            return
+        text = " ".join(str(element.text or "").split())
+        if text:
+            lines.append(f"{path}={text[:220]}")
+        elif len(list(element)) == 0:
+            lines.append(f"{path}=<empty>")
+        for child in list(element):
+            child_name = local_tag_name(child)
+            walk(child, f"{path}/{child_name}")
+            if len(lines) >= limit:
+                return
+
+    walk(res, prefix)
+    return lines
 
 
 def extract_invoice_info(note, company_name):
@@ -434,16 +464,23 @@ def parse_reservations(xml_bytes):
             el = res.find(tag)
             return el.text.strip() if el is not None and el.text else default
 
+        voucher = t("voucher")
+        res_id = t("resId")
         note = t("note")
         guest_count = extract_guest_count(res, note)
         if not guest_count and len(missing_guest_debug) < 3:
-            missing_guest_debug.append(f"{t('resId') or t('voucher')}: {collect_guest_count_debug_tags(res)}")
+            missing_guest_debug.append(f"{res_id or voucher}: {collect_guest_count_debug_tags(res)}")
         if len(source_debug) < 5:
             debug_tags = collect_source_debug_tags(res)
             if debug_tags:
                 source_debug.append(
-                    f"{t('resId') or t('voucher') or 'brak-id'} | object={t('object/name')} | note={note[:120]} | {debug_tags}"
+                    f"{res_id or voucher or 'brak-id'} | object={t('object/name')} | note={note[:120]} | {debug_tags}"
                 )
+        if DEBUG_PREVIO_VOUCHER and DEBUG_PREVIO_VOUCHER in {voucher, res_id}:
+            print(f"=== DEBUG TARGET RESERVATION {DEBUG_PREVIO_VOUCHER} ===")
+            for line in flatten_reservation_debug(res):
+                print(f"  {line}")
+            print("=== END DEBUG TARGET RESERVATION ===")
         channel = "Własna"
         note_lower = note.lower()
         if "airbnb" in note_lower:
@@ -474,7 +511,7 @@ def parse_reservations(xml_bytes):
         rows.append(
             [
                 t("resId"),
-                t("voucher"),
+                voucher,
                 t("created")[:10],
                 date_from_full,
                 date_to_full,
