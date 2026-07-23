@@ -291,6 +291,25 @@ def collect_guest_count_debug_tags(res):
     return ", ".join(matches)
 
 
+def collect_source_debug_tags(res):
+    matches = []
+    keywords = ("source", "partner", "channel", "origin", "firma", "company", "owner", "own")
+    for element in res.iter():
+        raw_name = local_tag_name(element)
+        name = normalize_text(raw_name)
+        if not any(keyword in name for keyword in keywords):
+            continue
+        text = " ".join(str(element.text or "").split())
+        child_count = len(list(element))
+        if text:
+            matches.append(f"{raw_name}={text[:120]}")
+        else:
+            matches.append(f"{raw_name}=<children:{child_count}>")
+        if len(matches) >= 30:
+            break
+    return ", ".join(matches)
+
+
 def extract_invoice_info(note, company_name):
     note = note or ""
     company_name = (company_name or "").strip()
@@ -408,6 +427,7 @@ def parse_reservations(xml_bytes):
     root = ET.fromstring(xml_bytes)
     rows = []
     missing_guest_debug = []
+    source_debug = []
 
     for res in root.findall(".//reservation"):
         def t(tag, default=""):
@@ -418,6 +438,12 @@ def parse_reservations(xml_bytes):
         guest_count = extract_guest_count(res, note)
         if not guest_count and len(missing_guest_debug) < 3:
             missing_guest_debug.append(f"{t('resId') or t('voucher')}: {collect_guest_count_debug_tags(res)}")
+        if len(source_debug) < 5:
+            debug_tags = collect_source_debug_tags(res)
+            if debug_tags:
+                source_debug.append(
+                    f"{t('resId') or t('voucher') or 'brak-id'} | object={t('object/name')} | note={note[:120]} | {debug_tags}"
+                )
         channel = "Własna"
         note_lower = note.lower()
         if "airbnb" in note_lower:
@@ -472,6 +498,11 @@ def parse_reservations(xml_bytes):
     if missing_guest_debug:
         print("Could not detect guest count for sample reservations:")
         for item in missing_guest_debug:
+            print(f"  {item}")
+
+    if source_debug:
+        print("Potential Previo source/company fields from sample reservations:")
+        for item in source_debug:
             print(f"  {item}")
 
     return rows
