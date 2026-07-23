@@ -294,16 +294,49 @@ def get_header(headers, name):
     return ""
 
 
+def parse_gmail_retry_delay(exc, attempt):
+    text = str(exc or "")
+    match = re.search(r"Retry after ([0-9T:\-\.]+Z)", text)
+    if match:
+        try:
+            retry_at = datetime.fromisoformat(match.group(1).replace("Z", "+00:00"))
+            now_utc = datetime.now(retry_at.tzinfo)
+            seconds = max(int((retry_at - now_utc).total_seconds()) + 1, 1)
+            return min(seconds, 180)
+        except Exception:
+            pass
+    return min(2 ** attempt, 180)
+
+
+def execute_gmail_request(request, label="", max_retries=6):
+    for attempt in range(max_retries):
+        try:
+            return request.execute()
+        except HttpError as exc:
+            status = getattr(getattr(exc, "resp", None), "status", None)
+            text = str(exc or "")
+            is_rate_limit = status == 429 or "rateLimitExceeded" in text or "userRateLimitExceeded" in text
+            if not is_rate_limit or attempt == max_retries - 1:
+                raise
+            wait_seconds = parse_gmail_retry_delay(exc, attempt + 1)
+            print(
+                f"Gmail rate limit for {label or 'request'} "
+                f"(attempt {attempt + 1}/{max_retries}), retry in {wait_seconds}s..."
+            )
+            time.sleep(wait_seconds)
+
+
 def list_gmail_messages(service, query):
     messages = []
     page_token = None
     while True:
-        resp = service.users().messages().list(
+        request = service.users().messages().list(
             userId="me",
             q=query,
             maxResults=100,
             pageToken=page_token,
-        ).execute()
+        )
+        resp = execute_gmail_request(request, label=f"messages.list q={query[:40]}")
         messages.extend(resp.get("messages", []))
         page_token = resp.get("nextPageToken")
         if not page_token:
@@ -458,11 +491,12 @@ def main():
     updated_reservations = set()
 
     for msg_ref in invoice_messages:
-        msg = gmail.users().messages().get(
+        request = gmail.users().messages().get(
             userId="me",
             id=msg_ref["id"],
             format="full",
-        ).execute()
+        )
+        msg = execute_gmail_request(request, label=f"messages.get invoice {msg_ref['id']}")
         payload = msg.get("payload", {})
         subject = get_header(payload.get("headers", []), "Subject")
         body = payload_to_text(payload)
@@ -506,11 +540,12 @@ def main():
     booking_invoice_skipped_no_match = 0
 
     for msg_ref in booking_invoice_messages:
-        msg = gmail.users().messages().get(
+        request = gmail.users().messages().get(
             userId="me",
             id=msg_ref["id"],
             format="full",
-        ).execute()
+        )
+        msg = execute_gmail_request(request, label=f"messages.get booking-invoice {msg_ref['id']}")
         payload = msg.get("payload", {})
         headers = payload.get("headers", [])
         subject = get_header(headers, "Subject")
@@ -557,11 +592,12 @@ def main():
     guest_pending_updates = {}
 
     for msg_ref in guest_request_messages:
-        msg = gmail.users().messages().get(
+        request = gmail.users().messages().get(
             userId="me",
             id=msg_ref["id"],
             format="full",
-        ).execute()
+        )
+        msg = execute_gmail_request(request, label=f"messages.get guest-request {msg_ref['id']}")
         payload = msg.get("payload", {})
         headers = payload.get("headers", [])
         subject = get_header(headers, "Subject")
