@@ -6,6 +6,7 @@ Scans Gmail messages for invoice requests and guest special requests, matches
 them to Previo reservations by reservation/voucher number, and updates the
 "Previo" sheet.
 """
+# VERSION: 2026-07-23-gmail-retry
 import base64
 import json
 import os
