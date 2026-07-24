@@ -526,6 +526,7 @@ def main():
     print(f"Found {len(rows)} reservations checking out today ({TODAY_STR})")
 
     previo_markers = read_previo_markers(service)
+    print(f"Previo markers loaded: {len(previo_markers)}")
     if previo_markers:
         rows = apply_previo_markers(rows, previo_markers)
         print(f"Applied main Previo markers for {len(previo_markers)} reservations")
