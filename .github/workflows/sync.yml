@@ -42,5 +42,6 @@ jobs:
           PREVIO_PASS: ${{ secrets.PREVIO_PASS }}
           PREVIO_HOT_ID: ${{ secrets.PREVIO_HOT_ID }}
           DAILY_SHEET_ID: ${{ secrets.DAILY_SHEET_ID }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
           GOOGLE_SERVICE_ACCOUNT: ${{ secrets.GOOGLE_SERVICE_ACCOUNT }}
         run: python daily_sheets.py
