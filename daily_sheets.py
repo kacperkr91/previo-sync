@@ -303,12 +303,15 @@ def read_previo_markers(service):
         if date_to != TODAY_STR:
             continue
         date_match_count += 1
+        invoice_status = str(padded[16] or "").strip()  # Q - Faktura status
         raw_market_codes = str(padded[26] or "").strip()  # AA
         raw_market_norm = normalize_text(raw_market_codes)
         inferred_doplata = "Dopłata" if "doplata" in raw_market_norm else ""
         inferred_rachunek = " / ".join(
             [label for label, cond in (("Nota", "nota" in raw_market_norm), ("Faktura", "faktura" in raw_market_norm and "faktura imienna" not in raw_market_norm)) if cond]
         )
+        if invoice_status:
+            inferred_rachunek = merge_labels(inferred_rachunek, "Faktura")
         inferred_pozycja = "FP" if ("faktura imienna" in raw_market_norm or "| fp" in f"| {raw_market_norm}") else ""
         payload = {
             "doplata_marker": str(padded[27] or "").strip() or inferred_doplata,  # AB fallback from AA
@@ -322,6 +325,7 @@ def read_previo_markers(service):
                     "res_id": res_id,
                     "voucher": voucher,
                     "date_to": date_to,
+                    "invoice_status": invoice_status,
                     "market_codes": raw_market_codes,
                     "payload": payload,
                 },
