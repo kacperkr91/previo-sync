@@ -6,7 +6,7 @@ Scans Gmail messages for invoice requests and guest special requests, matches
 them to Previo reservations by reservation/voucher number, and updates the
 "Previo" sheet.
 """
-# VERSION: 2026-07-23-gmail-retry
+# VERSION: 2026-07-24-gmail-incremental
 import base64
 import json
 import os
@@ -31,19 +31,22 @@ INVOICE_GMAIL_REFRESH_TOKEN = os.environ["INVOICE_GMAIL_REFRESH_TOKEN"]
 
 GMAIL_SCOPES = ["https://www.googleapis.com/auth/gmail.readonly"]
 SHEETS_SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
+STATE_SHEET_NAME = "_InvoiceMailSyncState"
+STATE_KEY_LAST_INTERNAL_MS = "last_internal_ms"
+INITIAL_LOOKBACK_DAYS = 120
+GMAIL_QUERY_OVERLAP_SECONDS = 3 * 24 * 60 * 60
 
-GMAIL_QUERY = (
-    'newer_than:365d '
+GMAIL_QUERY_BASE = (
     '("Nowa rezerwacja" OR "System zarządzania obiektem PREVIO" OR PREVIO) '
     '(affiliation OR numbertype OR "Informacje dodatkowe")'
 )
-BOOKING_GUEST_REQUEST_QUERY = (
-    'newer_than:365d from:(guest.booking.com) '
+BOOKING_GUEST_REQUEST_QUERY_BASE = (
+    'from:(guest.booking.com) '
     '("łóżeczko" OR lozeczko OR lozeczka OR crib OR cot OR "baby cot" OR '
     '"krzesełko" OR krzeselko OR krzeselka OR "high chair")'
 )
-BOOKING_INVOICE_QUERY = (
-    'newer_than:365d from:(guest.booking.com) '
+BOOKING_INVOICE_QUERY_BASE = (
+    'from:(guest.booking.com) '
     '(faktura OR fakture OR fakturę OR faktury OR invoice OR "VAT invoice" OR '
     'NIP OR VAT OR "tax id" OR "vat id")'
 )
@@ -327,6 +330,60 @@ def execute_gmail_request(request, label="", max_retries=6):
             time.sleep(wait_seconds)
 
 
+def ensure_state_sheet(sheet_service):
+    meta = sheet_service.get(spreadsheetId=SHEET_ID).execute()
+    sheets = [s["properties"]["title"] for s in meta.get("sheets", [])]
+    if STATE_SHEET_NAME in sheets:
+        return
+    sheet_service.batchUpdate(
+        spreadsheetId=SHEET_ID,
+        body={
+            "requests": [
+                {"addSheet": {"properties": {"title": STATE_SHEET_NAME, "hidden": True}}},
+            ]
+        },
+    ).execute()
+
+
+def read_sync_state(sheet_service):
+    ensure_state_sheet(sheet_service)
+    try:
+        resp = sheet_service.values().get(
+            spreadsheetId=SHEET_ID,
+            range=f"{STATE_SHEET_NAME}!A:B",
+        ).execute()
+    except Exception:
+        return {}
+    state = {}
+    for row in resp.get("values", []):
+        if len(row) >= 2 and str(row[0]).strip():
+            state[str(row[0]).strip()] = str(row[1]).strip()
+    return state
+
+
+def write_sync_state(sheet_service, state):
+    ensure_state_sheet(sheet_service)
+    values = [[key, value] for key, value in sorted(state.items())]
+    sheet_service.values().clear(
+        spreadsheetId=SHEET_ID,
+        range=f"{STATE_SHEET_NAME}!A:B",
+    ).execute()
+    sheet_service.values().update(
+        spreadsheetId=SHEET_ID,
+        range=f"{STATE_SHEET_NAME}!A1",
+        valueInputOption="RAW",
+        body={"values": values or [[STATE_KEY_LAST_INTERNAL_MS, ""]]},
+    ).execute()
+
+
+def build_incremental_query(base_query, state):
+    last_internal_ms = int(str(state.get(STATE_KEY_LAST_INTERNAL_MS, "") or "0") or "0")
+    if last_internal_ms > 0:
+        after_seconds = max(0, (last_internal_ms // 1000) - GMAIL_QUERY_OVERLAP_SECONDS)
+        return f"after:{after_seconds} {base_query}"
+    return f"newer_than:{INITIAL_LOOKBACK_DAYS}d {base_query}"
+
+
 def list_gmail_messages(service, query):
     messages = []
     page_token = None
@@ -480,10 +537,20 @@ def build_invoice_cells(row, status, company, tax_id, source, message_text):
 def main():
     gmail = gmail_service()
     sheets = sheets_service()
+    state = read_sync_state(sheets)
     reservations = read_previos_by_reservation(sheets)
-    invoice_messages = list_gmail_messages(gmail, GMAIL_QUERY)
-    booking_invoice_messages = list_gmail_messages(gmail, BOOKING_INVOICE_QUERY)
-    guest_request_messages = list_gmail_messages(gmail, BOOKING_GUEST_REQUEST_QUERY)
+    invoice_query = build_incremental_query(GMAIL_QUERY_BASE, state)
+    booking_invoice_query = build_incremental_query(BOOKING_INVOICE_QUERY_BASE, state)
+    guest_request_query = build_incremental_query(BOOKING_GUEST_REQUEST_QUERY_BASE, state)
+
+    print(f"Invoice Gmail query: {invoice_query}")
+    print(f"Booking invoice query: {booking_invoice_query}")
+    print(f"Guest request query: {guest_request_query}")
+
+    invoice_messages = list_gmail_messages(gmail, invoice_query)
+    booking_invoice_messages = list_gmail_messages(gmail, booking_invoice_query)
+    guest_request_messages = list_gmail_messages(gmail, guest_request_query)
+    max_internal_ms = int(str(state.get(STATE_KEY_LAST_INTERNAL_MS, "") or "0") or "0")
 
     matched = 0
     updated = 0
@@ -498,6 +565,7 @@ def main():
             format="full",
         )
         msg = execute_gmail_request(request, label=f"messages.get invoice {msg_ref['id']}")
+        max_internal_ms = max(max_internal_ms, int(msg.get("internalDate", "0") or "0"))
         payload = msg.get("payload", {})
         subject = get_header(payload.get("headers", []), "Subject")
         body = payload_to_text(payload)
@@ -547,6 +615,7 @@ def main():
             format="full",
         )
         msg = execute_gmail_request(request, label=f"messages.get booking-invoice {msg_ref['id']}")
+        max_internal_ms = max(max_internal_ms, int(msg.get("internalDate", "0") or "0"))
         payload = msg.get("payload", {})
         headers = payload.get("headers", [])
         subject = get_header(headers, "Subject")
@@ -599,6 +668,7 @@ def main():
             format="full",
         )
         msg = execute_gmail_request(request, label=f"messages.get guest-request {msg_ref['id']}")
+        max_internal_ms = max(max_internal_ms, int(msg.get("internalDate", "0") or "0"))
         payload = msg.get("payload", {})
         headers = payload.get("headers", [])
         subject = get_header(headers, "Subject")
@@ -642,6 +712,11 @@ def main():
     update_guest_request_rows(sheets, guest_pending_updates)
     for row_number in sorted(guest_pending_updates):
         print(f"Updated guest request info at row {row_number}")
+
+    if max_internal_ms:
+        state[STATE_KEY_LAST_INTERNAL_MS] = str(max_internal_ms)
+        write_sync_state(sheets, state)
+        print(f"Saved Gmail sync cursor: {max_internal_ms}")
 
     print(
         f"Done. invoice_messages={len(invoice_messages)}, invoice_matched={matched}, "
