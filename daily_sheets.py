@@ -277,6 +277,7 @@ def clear_data_rows(service):
 def read_previo_markers(service):
     """Read markers from the main Previo sheet for today's checkouts."""
     if not PREVIO_SHEET_ID:
+        print("Previo marker source missing: GOOGLE_SHEET_ID is empty for daily_sheets.py")
         return {}
     try:
         result = service.values().get(
@@ -288,21 +289,30 @@ def read_previo_markers(service):
         return {}
 
     marker_map = {}
-    for row in result.get("values", []):
+    values = result.get("values", [])
+    print(f"Previo rows fetched from main sheet: {len(values)}")
+    date_match_count = 0
+    marker_candidate_count = 0
+    for row in values:
         padded = row + [""] * (30 - len(row))
         res_id = str(padded[0] or "").strip()
         voucher = str(padded[1] or "").strip()
         date_to = str(padded[4] or "").strip()[:10]
         if date_to != TODAY_STR:
             continue
+        date_match_count += 1
         payload = {
             "doplata_marker": str(padded[27] or "").strip(),
             "rachunek_marker": str(padded[28] or "").strip(),
             "pozycja_marker": str(padded[29] or "").strip(),
         }
+        if payload["doplata_marker"] or payload["rachunek_marker"] or payload["pozycja_marker"]:
+            marker_candidate_count += 1
         for key in (voucher, res_id):
             if key:
                 marker_map[key] = payload
+    print(f"Previo rows matching today's checkout: {date_match_count}")
+    print(f"Previo rows with any marker for today: {marker_candidate_count}")
     return marker_map
 
 
