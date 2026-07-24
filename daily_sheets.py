@@ -8,6 +8,7 @@ import os
 import xml.etree.ElementTree as ET
 import requests
 import json
+import unicodedata
 from datetime import datetime, timedelta
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
@@ -29,6 +30,12 @@ PREV_TAB_NAME = (TODAY - timedelta(days=1)).strftime("%d.%m")  # e.g. "31.03"
 
 AIRBNB_COMMISSION = 0.155  # 15.5%
 
+
+def normalize_text(value):
+    text = unicodedata.normalize("NFD", str(value or ""))
+    text = "".join(ch for ch in text if unicodedata.category(ch) != "Mn")
+    return text.lower().strip()
+
 # ── CHANNEL MAPPING ──────────────────────────────────────
 def map_partner(raw):
     r = raw.lower()
@@ -44,6 +51,15 @@ def calc_price(raw_price, partner_raw):
     if "airbnb" in partner_raw.lower():
         price = round(price / (1 - AIRBNB_COMMISSION), 2)
     return price
+
+
+def extract_market_codes(res):
+    codes = []
+    for el in res.findall(".//marketCodeList/marketCode"):
+        text = (el.text or "").strip()
+        if text:
+            codes.append(text)
+    return codes
 
 # ── FETCH FROM PREVIO ────────────────────────────────────
 def fetch_today_reservations():
@@ -128,6 +144,17 @@ def parse_reservations(xml_bytes):
         price = calc_price(raw_price, partner_raw)
         price_fmt = f"{price:.2f} zł".replace(".", ",")
 
+        market_codes = extract_market_codes(res)
+        market_norm = [normalize_text(code) for code in market_codes]
+        has_doplata = any("doplata" in code for code in market_norm)
+        has_nota = any(code == "nota" or code.startswith("nota ") for code in market_norm)
+        has_faktura_imienna = any("faktura imienna" in code or code == "fp" for code in market_norm)
+        has_faktura = any(code == "faktura" or code.startswith("faktura ") for code in market_norm)
+
+        cena_system = price
+        doplata_marker = "Dopłata" if has_doplata else ""
+        rachunek_marker = " / ".join([label for label, cond in (("Nota", has_nota), ("Faktura", has_faktura)) if cond])
+
         # Apartment
         apt = t("object/name")
 
@@ -152,9 +179,12 @@ def parse_reservations(xml_bytes):
             "partner":  map_partner(partner_raw),  # H
             "status":   status,         # I
             "apt":      apt,            # J
-            "cena":     price,          # K (numeric for formatting)
+            "cena":     cena_system,    # K (numeric for formatting)
             "cena_fmt": price_fmt,      # K display
-            "notatka":  notatka,        # N - KASUJ jeśli brak sprzątania
+            "doplata_marker": doplata_marker,  # L - marker dopłaty
+            "rachunek_marker": rachunek_marker,  # N - Nota / Faktura
+            "pozycja_marker": " / ".join([label for label in ([notatka] if notatka else []) + (["FP"] if has_faktura_imienna else []) if label]),  # P
+            "notatka":  notatka,        # compat
         })
 
     # Sort by apartment name
@@ -258,11 +288,11 @@ def write_reservations(service, rows):
             r["status"],            # I - Status
             r["apt"],               # J - Apartament
             r["cena"],              # K - Cena z systemu (numeric)
-            "",                     # L - Dopłata (manual)
-            f"=K{row_num}+L{row_num}",  # M - Cena całkowita = K + L
-            "",                     # N - Nr rachunku (manual)
+            r.get("doplata_marker", ""),  # L - marker Dopłata
+            f'=IF(ISNUMBER(L{row_num});K{row_num}+L{row_num};K{row_num})',  # M - dodaj L tylko jeśli jest liczbą
+            r.get("rachunek_marker", ""),  # N - Nota / Faktura
             "",                     # O - (puste)
-            r.get("notatka", ""),   # P - Kasuj jeśli brak sprzątania
+            r.get("pozycja_marker", ""),   # P - FP / Kasuj
         ])
 
     if not values:
