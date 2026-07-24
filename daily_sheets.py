@@ -265,11 +265,70 @@ def copy_tab_from_previous(service):
 
 def clear_data_rows(service):
     """Clear data rows (3 onwards) but keep headers and formatting"""
-    # Clear columns A-M from row 3 onwards (keep headers in row 2)
+    # Clear columns A-P from row 3 onwards (keep headers in row 2)
     service.values().clear(
         spreadsheetId=DAILY_SHEET_ID,
         range=f"'{TAB_NAME}'!A3:P200"
     ).execute()
+
+def merge_labels(existing, incoming):
+    existing = str(existing or "").strip()
+    incoming = str(incoming or "").strip()
+    if not existing:
+        return incoming
+    if not incoming:
+        return existing
+    existing_parts = [p.strip() for p in existing.split("/") if p.strip()]
+    incoming_parts = [p.strip() for p in incoming.split("/") if p.strip()]
+    merged = []
+    for part in existing_parts + incoming_parts:
+        if part and part not in merged:
+            merged.append(part)
+    return " / ".join(merged)
+
+
+def read_existing_overrides(service):
+    """Read existing daily sheet values so sync can preserve manual edits."""
+    try:
+        result = service.values().get(
+            spreadsheetId=DAILY_SHEET_ID,
+            range=f"'{TAB_NAME}'!G3:P200"
+        ).execute()
+    except Exception:
+        return {}
+
+    overrides = {}
+    for row in result.get("values", []):
+        padded = row + [""] * (10 - len(row))
+        reservation_number = str(padded[0] or "").strip()  # G
+        if not reservation_number:
+            continue
+        overrides[reservation_number] = {
+            "l": padded[5],  # L
+            "n": padded[7],  # N
+            "o": padded[8],  # O
+            "p": padded[9],  # P
+        }
+    return overrides
+
+
+def apply_existing_overrides(rows, overrides):
+    for row in rows:
+        existing = overrides.get(str(row.get("nr", "")).strip())
+        if not existing:
+            continue
+
+        existing_l = str(existing.get("l", "")).strip()
+        existing_n = str(existing.get("n", "")).strip()
+        existing_o = str(existing.get("o", "")).strip()
+        existing_p = str(existing.get("p", "")).strip()
+
+        row["doplata_marker"] = existing_l or row.get("doplata_marker", "")
+        row["rachunek_marker"] = merge_labels(existing_n, row.get("rachunek_marker", ""))
+        row["payment_code"] = existing_o
+        row["pozycja_marker"] = merge_labels(existing_p, row.get("pozycja_marker", ""))
+    return rows
+
 
 def write_reservations(service, rows):
     """Write reservation data to sheet"""
@@ -291,7 +350,7 @@ def write_reservations(service, rows):
             r.get("doplata_marker", ""),  # L - marker Dopłata
             f'=IF(ISNUMBER(L{row_num});K{row_num}+L{row_num};K{row_num})',  # M - dodaj L tylko jeśli jest liczbą
             r.get("rachunek_marker", ""),  # N - Nota / Faktura
-            "",                     # O - (puste)
+            r.get("payment_code", ""),  # O - kod płatności / zachowany wpis
             r.get("pozycja_marker", ""),   # P - FP / Kasuj
         ])
 
@@ -316,19 +375,6 @@ def update_tab_date(service):
         valueInputOption="USER_ENTERED",
         body={"values": [[TODAY_STR]]}
     ).execute()
-
-# ── MANUAL DATA CHECK ────────────────────────────────────
-def has_manual_data(service):
-    """Check if today's tab already has manual data in dopłaty/rachunki/notatki."""
-    try:
-        result = service.values().get(
-            spreadsheetId=DAILY_SHEET_ID,
-            range=f"'{TAB_NAME}'!L3:N50"
-        ).execute()
-        values = result.get('values', [])
-        return any(any(str(cell).strip() for cell in row) for row in values)
-    except:
-        return False
 
 def has_reservation_data(service):
     """Check if today's tab already has reservation data (col A = dataRez)"""
@@ -415,11 +461,6 @@ def main():
         ).execute()
         print(f"Set red NIEGOTOWE status in Q11 and red tab color")
 
-    # If tab already had manual data (dopłaty/rachunki) before this run — skip to protect.
-    if tab_existed and has_manual_data(service):
-        print(f"Tab '{TAB_NAME}' has manual data in L:N — skipping to protect your data.")
-        return
-
     # Fetch from Previo
     print("Fetching from Previo API...")
     xml_data = fetch_today_reservations()
@@ -437,6 +478,11 @@ def main():
 
     rows = parse_reservations(xml_data)
     print(f"Found {len(rows)} reservations checking out today ({TODAY_STR})")
+
+    existing_overrides = read_existing_overrides(service)
+    if existing_overrides:
+        rows = apply_existing_overrides(rows, existing_overrides)
+        print(f"Preserved manual/previous values for {len(existing_overrides)} reservation rows")
 
     # Clear old data rows (A-P)
     clear_data_rows(service)
