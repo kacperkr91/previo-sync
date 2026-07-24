@@ -35,7 +35,8 @@ DEBUG_TARGET_RESERVATION = os.environ.get("DEBUG_TARGET_RESERVATION", "HM5XP4K48
 
 
 def normalize_text(value):
-    text = unicodedata.normalize("NFD", str(value or ""))
+    text = str(value or "").replace("ł", "l").replace("Ł", "L")
+    text = unicodedata.normalize("NFD", text)
     text = "".join(ch for ch in text if unicodedata.category(ch) != "Mn")
     return text.lower().strip()
 
