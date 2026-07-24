@@ -301,10 +301,17 @@ def read_previo_markers(service):
         if date_to != TODAY_STR:
             continue
         date_match_count += 1
+        raw_market_codes = str(padded[26] or "").strip()  # AA
+        raw_market_norm = normalize_text(raw_market_codes)
+        inferred_doplata = "Dopłata" if "doplata" in raw_market_norm else ""
+        inferred_rachunek = " / ".join(
+            [label for label, cond in (("Nota", "nota" in raw_market_norm), ("Faktura", "faktura" in raw_market_norm and "faktura imienna" not in raw_market_norm)) if cond]
+        )
+        inferred_pozycja = "FP" if ("faktura imienna" in raw_market_norm or "| fp" in f"| {raw_market_norm}") else ""
         payload = {
-            "doplata_marker": str(padded[27] or "").strip(),
-            "rachunek_marker": str(padded[28] or "").strip(),
-            "pozycja_marker": str(padded[29] or "").strip(),
+            "doplata_marker": str(padded[27] or "").strip() or inferred_doplata,  # AB fallback from AA
+            "rachunek_marker": str(padded[28] or "").strip() or inferred_rachunek,  # AC fallback from AA
+            "pozycja_marker": str(padded[29] or "").strip() or inferred_pozycja,  # AD fallback from AA
         }
         if payload["doplata_marker"] or payload["rachunek_marker"] or payload["pozycja_marker"]:
             marker_candidate_count += 1
