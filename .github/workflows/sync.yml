@@ -2,8 +2,8 @@ name: Sync Previo to Google Sheets
 
 on:
   schedule:
-    - cron: '0 * * * *'    # Every hour — sync all reservations
-    - cron: '0 6 * * *'    # Every day at 7:00 AM Warsaw time
+    - cron: '0 * * * *'
+    - cron: '0 6 * * *'
   workflow_dispatch:
 
 jobs:
@@ -27,6 +27,7 @@ jobs:
 
   daily-sheets:
     name: Daily reservations sheet
+    needs: sync-all
     runs-on: ubuntu-latest
     env:
       TZ: Europe/Warsaw
