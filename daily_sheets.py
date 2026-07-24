@@ -31,6 +31,7 @@ TAB_NAME      = TODAY.strftime("%d.%m")   # e.g. "01.04" with leading zero
 PREV_TAB_NAME = (TODAY - timedelta(days=1)).strftime("%d.%m")  # e.g. "31.03"
 
 AIRBNB_COMMISSION = 0.155  # 15.5%
+DEBUG_TARGET_RESERVATION = os.environ.get("DEBUG_TARGET_RESERVATION", "HM5XP4K488").strip()
 
 
 def normalize_text(value):
@@ -313,6 +314,17 @@ def read_previo_markers(service):
             "rachunek_marker": str(padded[28] or "").strip() or inferred_rachunek,  # AC fallback from AA
             "pozycja_marker": str(padded[29] or "").strip() or inferred_pozycja,  # AD fallback from AA
         }
+        if DEBUG_TARGET_RESERVATION and DEBUG_TARGET_RESERVATION in {voucher, res_id}:
+            print(
+                "Previo target row:",
+                {
+                    "res_id": res_id,
+                    "voucher": voucher,
+                    "date_to": date_to,
+                    "market_codes": raw_market_codes,
+                    "payload": payload,
+                },
+            )
         if payload["doplata_marker"] or payload["rachunek_marker"] or payload["pozycja_marker"]:
             marker_candidate_count += 1
         for key in (voucher, res_id):
@@ -326,12 +338,34 @@ def read_previo_markers(service):
 def apply_previo_markers(rows, marker_map):
     for row in rows:
         marker = marker_map.get(str(row.get("nr", "")).strip())
+        if DEBUG_TARGET_RESERVATION and str(row.get("nr", "")).strip() == DEBUG_TARGET_RESERVATION:
+            print(
+                "Daily target row before marker apply:",
+                {
+                    "nr": row.get("nr", ""),
+                    "apt": row.get("apt", ""),
+                    "current_l": row.get("doplata_marker", ""),
+                    "current_n": row.get("rachunek_marker", ""),
+                    "current_p": row.get("pozycja_marker", ""),
+                    "marker_found": marker or {},
+                },
+            )
         if not marker:
             continue
         if marker.get("doplata_marker"):
             row["doplata_marker"] = marker["doplata_marker"]
         row["rachunek_marker"] = merge_labels(row.get("rachunek_marker", ""), marker.get("rachunek_marker", ""))
         row["pozycja_marker"] = merge_labels(row.get("pozycja_marker", ""), marker.get("pozycja_marker", ""))
+        if DEBUG_TARGET_RESERVATION and str(row.get("nr", "")).strip() == DEBUG_TARGET_RESERVATION:
+            print(
+                "Daily target row after marker apply:",
+                {
+                    "nr": row.get("nr", ""),
+                    "l": row.get("doplata_marker", ""),
+                    "n": row.get("rachunek_marker", ""),
+                    "p": row.get("pozycja_marker", ""),
+                },
+            )
     return rows
 
 def merge_labels(existing, incoming):
