@@ -44,6 +44,12 @@ GUEST_REQUEST_HEADERS = [
     "Źródło próśb",
     "Wiadomość próśb",
 ]
+MARKET_HEADERS = [
+    "Market codes",
+    "Dopłata marker",
+    "Rachunek marker",
+    "Pozycja marker",
+]
 
 
 def normalize_text(value):
@@ -194,6 +200,15 @@ def cells_to_guest_request_info(cells):
 
 def local_tag_name(element):
     return str(element.tag or "").split("}", 1)[-1]
+
+
+def extract_market_codes(res):
+    codes = []
+    for el in res.findall(".//marketCodeList/marketCode"):
+        text = (el.text or "").strip()
+        if text:
+            codes.append(text)
+    return codes
 
 
 def int_from_text(value):
@@ -444,6 +459,14 @@ def parse_reservations(xml_bytes):
 
         company_name = t("company/name").strip()
         invoice_info = extract_invoice_info(note, company_name)
+        market_codes = extract_market_codes(res)
+        market_norm = [normalize_text(code) for code in market_codes]
+        has_doplata = any("doplata" in code for code in market_norm)
+        has_nota = any(code == "nota" or code.startswith("nota ") for code in market_norm)
+        has_faktura_imienna = any("faktura imienna" in code or code == "fp" for code in market_norm)
+        has_faktura = any(code == "faktura" or code.startswith("faktura ") for code in market_norm)
+        rachunek_marker = " / ".join([label for label, cond in (("Nota", has_nota), ("Faktura", has_faktura)) if cond])
+        pozycja_marker = "FP" if has_faktura_imienna else ""
 
         rows.append(
             [
@@ -466,6 +489,10 @@ def parse_reservations(xml_bytes):
                 *invoice_info_to_cells(invoice_info),
                 *guest_request_info_to_cells({}),
                 guest_count or "",
+                " | ".join(market_codes),
+                "Dopłata" if has_doplata else "",
+                rachunek_marker,
+                pozycja_marker,
             ]
         )
 
@@ -502,7 +529,7 @@ def read_existing_maps(service):
     try:
         result = service.values().get(
             spreadsheetId=SHEET_ID,
-            range=f"{SHEET_NAME}!A2:Z",
+            range=f"{SHEET_NAME}!A2:AD",
         ).execute()
     except Exception:
         return {}, {}
@@ -510,7 +537,7 @@ def read_existing_maps(service):
     invoice_map = {}
     request_map = {}
     for row in result.get("values", []):
-        row = row + [""] * 26
+        row = row + [""] * 30
         res_id = str(row[0] or "").strip()
         voucher = str(row[1] or "").strip()
         info = cells_to_invoice_info(row[16:21])
@@ -526,12 +553,12 @@ def read_existing_maps(service):
 def apply_existing_data(rows, existing_invoice_map, existing_request_map):
     merged_rows = []
     for row in rows:
-        row = row + [""] * (26 - len(row))
+        row = row + [""] * (30 - len(row))
         current = cells_to_invoice_info(row[16:21])
         existing = existing_invoice_map.get(str(row[0]).strip()) or existing_invoice_map.get(str(row[1]).strip())
         merged = merge_invoice_info(current, existing)
         request = existing_request_map.get(str(row[0]).strip()) or existing_request_map.get(str(row[1]).strip()) or {}
-        merged_rows.append(row[:16] + invoice_info_to_cells(merged) + guest_request_info_to_cells(request) + [row[25]])
+        merged_rows.append(row[:16] + invoice_info_to_cells(merged) + guest_request_info_to_cells(request) + row[25:30])
     return merged_rows
 
 
@@ -556,11 +583,12 @@ def write_to_sheets(service, rows):
         *INVOICE_HEADERS,
         *GUEST_REQUEST_HEADERS,
         "Osoby",
+        *MARKET_HEADERS,
     ]
 
     service.values().clear(
         spreadsheetId=SHEET_ID,
-        range=f"{SHEET_NAME}!A:Z",
+        range=f"{SHEET_NAME}!A:AD",
     ).execute()
 
     service.values().update(
