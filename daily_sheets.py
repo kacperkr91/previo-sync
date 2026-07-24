@@ -20,6 +20,8 @@ PREVIO_PASS   = os.environ["PREVIO_PASS"]
 PREVIO_HOT_ID = os.environ.get("PREVIO_HOT_ID", "762331")
 
 DAILY_SHEET_ID = os.environ["DAILY_SHEET_ID"]
+PREVIO_SHEET_ID = os.environ.get("GOOGLE_SHEET_ID", "")
+PREVIO_SHEET_NAME = "Previo"
 SERVICE_ACCOUNT_JSON = os.environ["GOOGLE_SERVICE_ACCOUNT"]
 
 # Today's date
@@ -271,6 +273,50 @@ def clear_data_rows(service):
         range=f"'{TAB_NAME}'!A3:P200"
     ).execute()
 
+
+def read_previo_markers(service):
+    """Read markers from the main Previo sheet for today's checkouts."""
+    if not PREVIO_SHEET_ID:
+        return {}
+    try:
+        result = service.values().get(
+            spreadsheetId=PREVIO_SHEET_ID,
+            range=f"{PREVIO_SHEET_NAME}!A2:AD"
+        ).execute()
+    except Exception as exc:
+        print(f"Could not read markers from main Previo sheet: {exc}")
+        return {}
+
+    marker_map = {}
+    for row in result.get("values", []):
+        padded = row + [""] * (30 - len(row))
+        res_id = str(padded[0] or "").strip()
+        voucher = str(padded[1] or "").strip()
+        date_to = str(padded[4] or "").strip()[:10]
+        if date_to != TODAY_STR:
+            continue
+        payload = {
+            "doplata_marker": str(padded[27] or "").strip(),
+            "rachunek_marker": str(padded[28] or "").strip(),
+            "pozycja_marker": str(padded[29] or "").strip(),
+        }
+        for key in (voucher, res_id):
+            if key:
+                marker_map[key] = payload
+    return marker_map
+
+
+def apply_previo_markers(rows, marker_map):
+    for row in rows:
+        marker = marker_map.get(str(row.get("nr", "")).strip())
+        if not marker:
+            continue
+        if marker.get("doplata_marker"):
+            row["doplata_marker"] = marker["doplata_marker"]
+        row["rachunek_marker"] = merge_labels(row.get("rachunek_marker", ""), marker.get("rachunek_marker", ""))
+        row["pozycja_marker"] = merge_labels(row.get("pozycja_marker", ""), marker.get("pozycja_marker", ""))
+    return rows
+
 def merge_labels(existing, incoming):
     existing = str(existing or "").strip()
     incoming = str(incoming or "").strip()
@@ -478,6 +524,11 @@ def main():
 
     rows = parse_reservations(xml_data)
     print(f"Found {len(rows)} reservations checking out today ({TODAY_STR})")
+
+    previo_markers = read_previo_markers(service)
+    if previo_markers:
+        rows = apply_previo_markers(rows, previo_markers)
+        print(f"Applied main Previo markers for {len(previo_markers)} reservations")
 
     existing_overrides = read_existing_overrides(service)
     if existing_overrides:
