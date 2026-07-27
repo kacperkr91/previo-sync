@@ -425,10 +425,12 @@ def apply_existing_overrides(rows, overrides):
         existing_o = str(existing.get("o", "")).strip()
         existing_p = str(existing.get("p", "")).strip()
 
-        row["doplata_marker"] = existing_l or row.get("doplata_marker", "")
-        row["rachunek_marker"] = merge_labels(existing_n, row.get("rachunek_marker", ""))
+        # Existing daily-sheet values are the source of truth for manual edits,
+        # including intentional deletions back to blank.
+        row["doplata_marker"] = existing_l
+        row["rachunek_marker"] = existing_n
         row["payment_code"] = existing_o
-        row["pozycja_marker"] = merge_labels(existing_p, row.get("pozycja_marker", ""))
+        row["pozycja_marker"] = existing_p
     return rows
 
 
@@ -598,14 +600,18 @@ def main():
     # Write reservations
     write_reservations(service, rows)
 
-    # Write payment formula in column O only for rows with data
+    # Write payment formula in column O only for rows that do not already
+    # have a preserved manual/existing value in the current daily tab.
     if rows:
         formulas = []
-        for i in range(len(rows)):
+        for i, row in enumerate(rows):
             row_num = i + 3
-            formulas.append([
-                f'=IF($H{row_num}="Booking.com XML";"B";IF($H{row_num}="AirBnBXML2";"A";IF($H{row_num}="ProfitRoomXML";"PP";"")))'
-            ])
+            if str(row.get("payment_code", "")).strip():
+                formulas.append([row["payment_code"]])
+            else:
+                formulas.append([
+                    f'=IF($H{row_num}="Booking.com XML";"B";IF($H{row_num}="AirBnBXML2";"A";IF($H{row_num}="ProfitRoomXML";"PP";"")))'
+                ])
         service.values().update(
             spreadsheetId=DAILY_SHEET_ID,
             range=f"'{TAB_NAME}'!O3",
