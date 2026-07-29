@@ -168,6 +168,9 @@ def parse_reservations(xml_bytes):
         # Voucher / reservation number
         voucher = t("voucher") or t("resId")
 
+        # Reservations with "/" in the reservation number are treated as direct bookings.
+        partner_value = "Własna" if "/" in str(voucher or "") else map_partner(partner_raw)
+
         # Company / KASUJ
         company = t("company/name").strip()
         notatka = "Kasuj" if company.lower() == "kasuj" else ""
@@ -180,7 +183,7 @@ def parse_reservations(xml_bytes):
             "osoby":    persons,        # E
             "gosc":     guest,          # F
             "nr":       voucher,        # G
-            "partner":  map_partner(partner_raw),  # H
+            "partner":  partner_value,  # H
             "status":   status,         # I
             "apt":      apt,            # J
             "cena":     cena_system,    # K (numeric for formatting)
