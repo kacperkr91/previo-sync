@@ -17,6 +17,7 @@ Zakładka 'KSeF' w arkuszu będzie zawierać kolumny:
 import os
 import json
 import base64
+import re
 import requests
 import xml.etree.ElementTree as ET
 from datetime import datetime, date, timedelta
@@ -263,22 +264,93 @@ def parse_invoice_xml(xml_bytes):
                     return value
         return ""
 
-    def find_payment_due_date():
-        # Szukamy po nazwach lokalnych, bo struktura i namespace faktur potrafią się różnić
-        for el in root.iter():
-            if local_name(el.tag) != "TerminPlatnosci":
+    def normalize_date_text(value):
+        if not value:
+            return ""
+        text = str(value).strip()
+        if not text:
+            return ""
+
+        patterns = [
+            (r"(\d{4}-\d{2}-\d{2})", lambda m: m.group(1)),
+            (r"(\d{4}/\d{2}/\d{2})", lambda m: m.group(1).replace("/", "-")),
+            (
+                r"(\d{1,2})\.(\d{1,2})\.(\d{4})",
+                lambda m: f"{int(m.group(3)):04d}-{int(m.group(2)):02d}-{int(m.group(1)):02d}",
+            ),
+            (
+                r"(\d{1,2})/(\d{1,2})/(\d{4})",
+                lambda m: f"{int(m.group(3)):04d}-{int(m.group(2)):02d}-{int(m.group(1)):02d}",
+            ),
+        ]
+
+        for pattern, formatter in patterns:
+            match = re.search(pattern, text)
+            if not match:
                 continue
-            for child in el.iter():
-                if local_name(child.tag) == "Termin" and child.text:
-                    value = child.text.strip()
-                    if value:
-                        return value
+            normalized = formatter(match)
+            try:
+                date.fromisoformat(normalized)
+                return normalized
+            except Exception:
+                continue
+
+        return ""
+
+    def find_date_in_element(el):
+        direct = normalize_date_text(el.text or "")
+        if direct:
+            return direct
+
+        for child in el.iter():
+            candidate = normalize_date_text(child.text or "")
+            if candidate:
+                return candidate
+        return ""
+
+    def find_payment_due_date():
+        # Szukamy po nazwach lokalnych, bo struktura i namespace faktur potrafią się różnić.
+        # Nowsze faktury potrafią trzymać termin w innym podrzewie albo jako zwykły tekst daty.
+        strict_names = {
+            "TerminPlatnosci",
+            "TerminPłatnosci",
+            "TerminPłatności",
+            "TerminZaplaty",
+            "TerminZapłaty",
+            "DataPlatnosci",
+            "DataPłatnosci",
+            "DataPłatności",
+            "PaymentDueDate",
+            "DueDate",
+        }
+
+        for el in root.iter():
+            tag_name = local_name(el.tag)
+            lower_name = tag_name.lower()
+            if tag_name not in strict_names and not (
+                "termin" in lower_name and ("plat" in lower_name or "zaplat" in lower_name or "due" in lower_name)
+            ):
+                continue
+
+            candidate = find_date_in_element(el)
+            if candidate:
+                return candidate
+
+        # Ostateczny fallback: dowolna gałąź związana z płatnością, jeśli zawiera jedyną datę terminu.
+        for el in root.iter():
+            lower_name = local_name(el.tag).lower()
+            if not any(token in lower_name for token in ("platn", "płatn", "zaplat", "zapl", "payment", "due")):
+                continue
+            candidate = find_date_in_element(el)
+            if candidate:
+                return candidate
+
         return ""
 
     def find_paid_date():
         for el in root.iter():
-            if local_name(el.tag) == "DataZaplaty" and el.text:
-                value = el.text.strip()
+            if local_name(el.tag) == "DataZaplaty":
+                value = normalize_date_text(el.text or "")
                 if value:
                     return value
         return ""
