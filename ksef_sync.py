@@ -11,7 +11,7 @@ Wymagane secrets w GitHub (repo previo-sync):
   GS_SA_JSON_B64          — Service Account JSON (base64) z uprawnieniami do zapisu
 
 Zakładka 'KSeF' w arkuszu będzie zawierać kolumny:
-  NumerKSeF | DataWystawienia | Sprzedawca | NIP Sprzedawcy | Netto | VAT | Brutto | TerminPlatnosci | DniDoPlatnosci | Alert
+  NumerKSeF | NrFaktury | DataWystawienia | Sprzedawca | NIP Sprzedawcy | Netto | VAT | Brutto | TerminPlatnosci | DniDoPlatnosci | Alert
 """
 
 import os
@@ -454,9 +454,14 @@ def parse_invoice_xml(xml_bytes):
 
     # FA(3) używa P_1, P_15 itp. (z podkreślnikiem), FA(2) bez podkreślnika
     p1   = find(".//fa:Fa/fa:P_1")   or find(".//fa:Fa/fa:P1")
+    p2   = find(".//fa:Fa/fa:P_2")   or find(".//fa:Fa/fa:P2")
     p15  = find(".//fa:Fa/fa:P_15")  or find(".//fa:Fa/fa:P15")
     p16  = find(".//fa:Fa/fa:P_16")  or find(".//fa:Fa/fa:P16")
     p13  = find(".//fa:Fa/fa:P_13_1") or find(".//fa:Fa/fa:P13_1")
+    numer_faktury = (
+        p2 or
+        find_first_text_by_local_names("NumerFaktury", "NrFaktury", "NumerFa", "NrFa", "NumerDokumentu")
+    )
 
     # Termin płatności — szukamy w Platnosc/TerminPlatnosci/Termin
     # Ścieżka może być w <Fa><Platnosc> lub bezpośrednio w <Platnosc>
@@ -477,6 +482,7 @@ def parse_invoice_xml(xml_bytes):
         termin = p1
 
     return {
+        "invoice_number":  numer_faktury,
         "data_wystawienia": p1,
         "sprzedawca_nip":   sprzedawca_nip,
         "sprzedawca_nazwa": sprzedawca_nazwa,
@@ -619,7 +625,7 @@ def write_to_sheets(rows_data):
         print(f"Utworzono zakładkę '{SHEET_NAME}'")
 
     header_row = [
-        "Nr KSeF", "Data wystawienia", "Sprzedawca", "NIP sprzedawcy",
+        "Nr KSeF", "Nr faktury", "Data wystawienia", "Sprzedawca", "NIP sprzedawcy",
         "Netto", "VAT", "Brutto", "Termin płatności", "Dni do płatności", "Alert", "Aktualizacja",
         "Oplacona", "Data oplaćenia", "Kwota oplacona", "Kwota pozostala"
     ]
@@ -627,7 +633,7 @@ def write_to_sheets(rows_data):
     rows = [header_row]
     for row in rows_data:
         ksef_number = str(row[0] or "").strip()
-        brutto_value = parse_money_value(row[6] if len(row) > 6 else 0)
+        brutto_value = parse_money_value(row[7] if len(row) > 7 else 0)
         summary = build_ksef_paid_summary(paid_map.get(ksef_number), brutto_value)
         rows.append(row + [
             summary["status"],
@@ -636,19 +642,19 @@ def write_to_sheets(rows_data):
             summary["remainingAmount"] if brutto_value > 0 else "",
         ])
 
-    # Wyczyść arkusz przez batchClear, potem zapisz cały zakres A:O.
+    # Wyczyść arkusz przez batchClear, potem zapisz cały zakres A:P.
     # Dzięki temu statusy opłacenia nie "zostają" na starych wierszach po sortowaniu.
     requests.post(
         f"https://sheets.googleapis.com/v4/spreadsheets/{SPREADSHEET_ID}/values:batchClear",
         headers=hdrs,
-        json={"ranges": [f"{SHEET_NAME}!A1:O2000"]}
+        json={"ranges": [f"{SHEET_NAME}!A1:P10000"]}
     )
     resp = requests.post(
         f"https://sheets.googleapis.com/v4/spreadsheets/{SPREADSHEET_ID}/values:batchUpdate",
         headers=hdrs,
         json={
             "valueInputOption": "RAW",
-            "data": [{"range": f"{SHEET_NAME}!A1:O2000", "values": rows}]
+            "data": [{"range": f"{SHEET_NAME}!A1:P10000", "values": rows}]
         }
     )
     if not resp.ok:
@@ -683,7 +689,7 @@ def main():
         try:
             token_s = get_sheets_token()
             hdrs_s = {"Authorization": f"Bearer {token_s}"}
-            url_range_read = requests.utils.quote(f"{SHEET_NAME}!A2:K2000")
+            url_range_read = requests.utils.quote(f"{SHEET_NAME}!A2:L10000")
             r_read = requests.get(
                 f"https://sheets.googleapis.com/v4/spreadsheets/{SPREADSHEET_ID}/values/{url_range_read}",
                 headers=hdrs_s
@@ -732,12 +738,13 @@ def main():
                 parsed = {"termin_platnosci": termin_z_cache}
                 # Wczytaj też inne pola z cache jeśli dostępne
                 cached = existing.get(ksef_number, [])
-                if len(cached) >= 7:
-                    parsed["sprzedawca_nazwa"] = cached[2] if len(cached) > 2 else ""
-                    parsed["sprzedawca_nip"]   = cached[3] if len(cached) > 3 else ""
-                    parsed["netto"]            = cached[4] if len(cached) > 4 else ""
-                    parsed["vat"]              = cached[5] if len(cached) > 5 else ""
-                    parsed["brutto"]           = cached[6] if len(cached) > 6 else ""
+                if len(cached) >= 8:
+                    parsed["invoice_number"]   = cached[1] if len(cached) > 1 else ""
+                    parsed["sprzedawca_nazwa"] = cached[3] if len(cached) > 3 else ""
+                    parsed["sprzedawca_nip"]   = cached[4] if len(cached) > 4 else ""
+                    parsed["netto"]            = cached[5] if len(cached) > 5 else ""
+                    parsed["vat"]              = cached[6] if len(cached) > 6 else ""
+                    parsed["brutto"]           = cached[7] if len(cached) > 7 else ""
             elif ksef_number:
                 try:
                     time.sleep(XML_FETCH_DELAY_SEC)
@@ -751,6 +758,7 @@ def main():
 
             sprzedawca = parsed.get("sprzedawca_nazwa") or sprzedawca_meta
             nip_sp     = parsed.get("sprzedawca_nip", "") or nip_meta
+            invoice_number = parsed.get("invoice_number", "")
             netto      = parsed.get("netto", "") or netto_meta
             vat        = parsed.get("vat", "")
             brutto     = parsed.get("brutto", "") or brutto_meta
@@ -771,6 +779,7 @@ def main():
 
             rows.append([
                 ksef_number,
+                invoice_number,
                 inv_date,
                 sprzedawca,
                 nip_sp,
