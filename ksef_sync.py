@@ -18,6 +18,7 @@ import os
 import json
 import base64
 import re
+import time
 import requests
 import xml.etree.ElementTree as ET
 from datetime import datetime, date, timedelta
@@ -34,6 +35,8 @@ GS_SA_JSON_B64       = os.environ.get("GS_SA_JSON_B64", "")
 ALERT_DAYS           = 7   # alert jeśli termin płatności za mniej niż 7 dni
 XML_FETCH_DELAY_SEC  = 6   # bezpieczny odstęp między pobraniami XML z KSeF
 QUERY_CHUNK_DAYS     = 7   # krótsze zakresy są stabilniejsze dla API KSeF
+XML_FETCH_RETRIES    = 8
+XML_RATE_LIMIT_WAIT  = 30
 
 # ── KSEF AUTH ────────────────────────────────────────────────────────────────
 def ksef_get_access_token():
@@ -225,6 +228,50 @@ def ksef_get_invoice_xml(access_token, ksef_number):
             access_token=access_token,
         )
         return result.content
+
+
+def ksef_get_invoice_xml_with_retry(access_token, ksef_number):
+    """
+    Pobiera XML faktury z retry.
+    Przy 429 czeka i ponawia.
+    Przy 401 odświeża sesję KSeF i zwraca nowy access token.
+    """
+    current_token = access_token
+    last_error = None
+
+    for attempt in range(1, XML_FETCH_RETRIES + 1):
+        try:
+            xml_bytes = ksef_get_invoice_xml(current_token, ksef_number)
+            return xml_bytes, current_token
+        except Exception as e:
+            last_error = e
+            error_text = str(e)
+
+            if "401" in error_text:
+                print(f"🔄 Odświeżam sesję KSeF dla XML {ksef_number[-12:]} (próba {attempt}/{XML_FETCH_RETRIES})")
+                try:
+                    current_token = ksef_get_access_token()
+                    time.sleep(2)
+                    continue
+                except Exception as refresh_error:
+                    last_error = refresh_error
+                    break
+
+            if "429" in error_text or "Too Many Requests" in error_text:
+                if attempt >= XML_FETCH_RETRIES:
+                    break
+                wait_seconds = XML_RATE_LIMIT_WAIT * attempt
+                print(
+                    f"⏳ XML rate limit {ksef_number[-12:]} "
+                    f"(próba {attempt}/{XML_FETCH_RETRIES}), czekam {wait_seconds}s...",
+                    flush=True,
+                )
+                time.sleep(wait_seconds)
+                continue
+
+            break
+
+    raise last_error
 
 
 def parse_invoice_xml(xml_bytes):
@@ -676,8 +723,6 @@ def main():
         date_to = date.today()
         invoices = ksef_query_invoices(access_token, date_from=date_from, date_to=date_to)
 
-        import time
-
         # Wczytaj istniejące dane z arkusza (cache terminów)
         existing = {}
         try:
@@ -741,7 +786,7 @@ def main():
             elif ksef_number:
                 try:
                     time.sleep(XML_FETCH_DELAY_SEC)
-                    xml_bytes = ksef_get_invoice_xml(access_token, ksef_number)
+                    xml_bytes, access_token = ksef_get_invoice_xml_with_retry(access_token, ksef_number)
                     parsed = parse_invoice_xml(xml_bytes)
                     xml_fetched += 1
                     termin_log = parsed.get("termin_platnosci", "") or "BRAK"
