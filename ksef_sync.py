@@ -18,6 +18,7 @@ import os
 import json
 import base64
 import re
+import time
 import requests
 import xml.etree.ElementTree as ET
 from datetime import datetime, date, timedelta
@@ -36,6 +37,9 @@ XML_FETCH_DELAY_SEC  = 6   # bezpieczny odstęp między pobraniami XML z KSeF
 QUERY_CHUNK_DAYS     = 7   # krótsze zakresy są stabilniejsze dla API KSeF
 KSEF_HISTORY_DAYS    = 730 # pokazuj też starsze faktury, nie tylko świeże
 KSEF_SHEET_MAX_ROWS  = 10000
+KSEF_QUERY_RETRIES   = 6
+KSEF_QUERY_BASE_WAIT = 20
+KSEF_CHUNK_PAUSE_SEC = 1.5
 
 # ── KSEF AUTH ────────────────────────────────────────────────────────────────
 def ksef_get_access_token():
@@ -137,20 +141,44 @@ def _ksef_query_invoices_chunk(access_token, date_from, date_to):
                 page_offset = 0
                 all_invoices = []
                 while True:
-                    resp = client.invoices.query_invoice_metadata_by_date_range(
-                        subject_type=InvoiceQuerySubjectType.SUBJECT2,  # jako nabywca
-                        date_type=date_type,
-                        date_from=range_from,
-                        date_to=range_to,
-                        access_token=access_token,
-                        page_offset=page_offset,
-                        page_size=page_size,
-                    )
+                    resp = None
+                    last_page_error = None
+                    for attempt in range(1, KSEF_QUERY_RETRIES + 1):
+                        try:
+                            resp = client.invoices.query_invoice_metadata_by_date_range(
+                                subject_type=InvoiceQuerySubjectType.SUBJECT2,  # jako nabywca
+                                date_type=date_type,
+                                date_from=range_from,
+                                date_to=range_to,
+                                access_token=access_token,
+                                page_offset=page_offset,
+                                page_size=page_size,
+                            )
+                            last_page_error = None
+                            break
+                        except Exception as e:
+                            last_page_error = e
+                            error_text = str(e)
+                            if "429" not in error_text and "Too Many Requests" not in error_text:
+                                raise
+                            if attempt >= KSEF_QUERY_RETRIES:
+                                raise
+                            wait_seconds = KSEF_QUERY_BASE_WAIT * attempt
+                            print(
+                                f"⏳ KSeF rate limit dla zakresu {range_from} -> {range_to}, "
+                                f"strona offset {page_offset}. Próba {attempt}/{KSEF_QUERY_RETRIES}, "
+                                f"czekam {wait_seconds}s...",
+                                flush=True,
+                            )
+                            time.sleep(wait_seconds)
+                    if last_page_error and resp is None:
+                        raise last_page_error
                     batch = resp.invoices or []
                     all_invoices.extend(batch)
                     if len(batch) < page_size or not getattr(resp, 'has_more', False):
                         return all_invoices
                     page_offset += page_size
+                    time.sleep(0.3)
             except Exception as e:
                 print(
                     f"⚠️ KSeF odrzucił query dla date_type={getattr(date_type, 'value', date_type)} "
@@ -213,6 +241,7 @@ def ksef_query_invoices(access_token, date_from=None, date_to=None):
             all_invoices.append(inv)
 
         current_start = current_end + timedelta(days=1)
+        time.sleep(KSEF_CHUNK_PAUSE_SEC)
 
     print(f"Znaleziono {len(all_invoices)} faktur zakupowych")
     return all_invoices
@@ -495,7 +524,6 @@ def get_sheets_token():
         raise ValueError("GS_SA_JSON_B64 nie ustawiony")
     sa_json = json.loads(base64.b64decode(GS_SA_JSON_B64))
 
-    import time
     from cryptography.hazmat.primitives import serialization, hashes
     from cryptography.hazmat.primitives.asymmetric import padding
 
@@ -677,8 +705,6 @@ def main():
         date_from = date.today() - timedelta(days=KSEF_HISTORY_DAYS)
         date_to = date.today()
         invoices = ksef_query_invoices(access_token, date_from=date_from, date_to=date_to)
-
-        import time
 
         # Wczytaj istniejące dane z arkusza (cache terminów)
         existing = {}
