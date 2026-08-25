@@ -34,6 +34,8 @@ GS_SA_JSON_B64       = os.environ.get("GS_SA_JSON_B64", "")
 ALERT_DAYS           = 7   # alert jeśli termin płatności za mniej niż 7 dni
 XML_FETCH_DELAY_SEC  = 6   # bezpieczny odstęp między pobraniami XML z KSeF
 QUERY_CHUNK_DAYS     = 7   # krótsze zakresy są stabilniejsze dla API KSeF
+KSEF_HISTORY_DAYS    = 730 # pokazuj też starsze faktury, nie tylko świeże
+KSEF_SHEET_MAX_ROWS  = 10000
 
 # ── KSEF AUTH ────────────────────────────────────────────────────────────────
 def ksef_get_access_token():
@@ -170,7 +172,7 @@ def ksef_query_invoices(access_token, date_from=None, date_to=None):
     na szerokie przedziały i format datetime.
     """
     if not date_from:
-        date_from = date.today() - timedelta(days=60)
+        date_from = date.today() - timedelta(days=KSEF_HISTORY_DAYS)
     if not date_to:
         date_to = date.today()
 
@@ -641,14 +643,14 @@ def write_to_sheets(rows_data):
     requests.post(
         f"https://sheets.googleapis.com/v4/spreadsheets/{SPREADSHEET_ID}/values:batchClear",
         headers=hdrs,
-        json={"ranges": [f"{SHEET_NAME}!A1:O2000"]}
+        json={"ranges": [f"{SHEET_NAME}!A1:O{KSEF_SHEET_MAX_ROWS}"]}
     )
     resp = requests.post(
         f"https://sheets.googleapis.com/v4/spreadsheets/{SPREADSHEET_ID}/values:batchUpdate",
         headers=hdrs,
         json={
             "valueInputOption": "RAW",
-            "data": [{"range": f"{SHEET_NAME}!A1:O2000", "values": rows}]
+            "data": [{"range": f"{SHEET_NAME}!A1:O{KSEF_SHEET_MAX_ROWS}", "values": rows}]
         }
     )
     if not resp.ok:
@@ -669,10 +671,10 @@ def main():
     print("Sesja aktywna.")
 
     try:
-        # Pobierz faktury z ostatnich 60 dni.
+        # Pobierz szeroką historię, żeby starsze faktury nie znikały po syncu.
         # Używamy czystych dat i krótszych chunków, bo API KSeF potrafi
         # odrzucać szerokie zakresy przekazane jako datetime.
-        date_from = date.today() - timedelta(days=60)
+        date_from = date.today() - timedelta(days=KSEF_HISTORY_DAYS)
         date_to = date.today()
         invoices = ksef_query_invoices(access_token, date_from=date_from, date_to=date_to)
 
@@ -683,7 +685,7 @@ def main():
         try:
             token_s = get_sheets_token()
             hdrs_s = {"Authorization": f"Bearer {token_s}"}
-            url_range_read = requests.utils.quote(f"{SHEET_NAME}!A2:K2000")
+            url_range_read = requests.utils.quote(f"{SHEET_NAME}!A2:K{KSEF_SHEET_MAX_ROWS}")
             r_read = requests.get(
                 f"https://sheets.googleapis.com/v4/spreadsheets/{SPREADSHEET_ID}/values/{url_range_read}",
                 headers=hdrs_s
