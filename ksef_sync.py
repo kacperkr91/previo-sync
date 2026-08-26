@@ -806,10 +806,11 @@ def main():
                 termin_z_cache = cached[due_idx] if len(cached) > due_idx else ""
                 numer_faktury_cache = cached[invoice_idx] if invoice_idx is not None and len(cached) > invoice_idx else ""
 
-            # Pobierz XML dla każdej faktury bez terminu w cache.
-            # Dzięki temu skrypt uzupełnia wszystkie możliwe terminy w jednym uruchomieniu.
+            # Pobierz XML dla każdej faktury bez terminu lub bez numeru faktury w cache.
+            # Dzięki temu stopniowo uzupełniamy także nową kolumnę "Nr faktury".
             parsed = {}
-            if termin_z_cache:
+            should_fetch_xml = (not termin_z_cache) or (not numer_faktury_cache)
+            if not should_fetch_xml:
                 # Mamy termin z cache — użyj go bezpośrednio
                 parsed = {"termin_platnosci": termin_z_cache, "numer_faktury": numer_faktury_cache}
                 # Wczytaj też inne pola z cache jeśli dostępne
