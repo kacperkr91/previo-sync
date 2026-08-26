@@ -501,6 +501,7 @@ def parse_invoice_xml(xml_bytes):
 
     # FA(3) używa P_1, P_15 itp. (z podkreślnikiem), FA(2) bez podkreślnika
     p1   = find(".//fa:Fa/fa:P_1")   or find(".//fa:Fa/fa:P1")
+    p2   = find(".//fa:Fa/fa:P_2")   or find(".//fa:Fa/fa:P2")
     p15  = find(".//fa:Fa/fa:P_15")  or find(".//fa:Fa/fa:P15")
     p16  = find(".//fa:Fa/fa:P_16")  or find(".//fa:Fa/fa:P16")
     p13  = find(".//fa:Fa/fa:P_13_1") or find(".//fa:Fa/fa:P13_1")
@@ -525,6 +526,7 @@ def parse_invoice_xml(xml_bytes):
 
     return {
         "data_wystawienia": p1,
+        "numer_faktury": p2,
         "sprzedawca_nip":   sprzedawca_nip,
         "sprzedawca_nazwa": sprzedawca_nazwa,
         "termin_platnosci": termin,
@@ -790,7 +792,10 @@ def main():
                     parsed = parse_invoice_xml(xml_bytes)
                     xml_fetched += 1
                     termin_log = parsed.get("termin_platnosci", "") or "BRAK"
-                    print(f"  XML {xml_fetched}: {ksef_number[-12:]} | termin: {termin_log[:10]}")
+                    numer_faktury_log = parsed.get("numer_faktury", "") or "BRAK"
+                    print(
+                        f"  XML {xml_fetched}: {ksef_number[-12:]} | nr: {numer_faktury_log} | termin: {termin_log[:10]}"
+                    )
                 except Exception as e:
                     print(f"⚠️ Brak XML {ksef_number[-12:]}: {e}")
 
