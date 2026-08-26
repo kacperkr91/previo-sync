@@ -584,6 +584,36 @@ def parse_money_value(value):
         return 0.0
 
 
+def get_cached_ksef_layout(cached_row):
+    issue_date_old = str(cached_row[1] if len(cached_row) > 1 else "").strip()
+    issue_date_new = str(cached_row[2] if len(cached_row) > 2 else "").strip()
+    has_new_invoice_column = bool(issue_date_new and re.match(r"^\d{4}-\d{2}-\d{2}", issue_date_new))
+    has_old_issue_date = bool(issue_date_old and re.match(r"^\d{4}-\d{2}-\d{2}", issue_date_old))
+
+    if has_new_invoice_column and not has_old_issue_date:
+        return {
+            "invoice_idx": 1,
+            "issue_idx": 2,
+            "seller_idx": 3,
+            "nip_idx": 4,
+            "netto_idx": 5,
+            "vat_idx": 6,
+            "brutto_idx": 7,
+            "due_idx": 8,
+        }
+
+    return {
+        "invoice_idx": None,
+        "issue_idx": 1,
+        "seller_idx": 2,
+        "nip_idx": 3,
+        "netto_idx": 4,
+        "vat_idx": 5,
+        "brutto_idx": 6,
+        "due_idx": 7,
+    }
+
+
 def normalize_ksef_paid_entry(entry, brutto_value):
     if not isinstance(entry, dict):
         return {"payments": [], "updatedAt": ""}
@@ -668,7 +698,7 @@ def write_to_sheets(rows_data):
         print(f"Utworzono zakładkę '{SHEET_NAME}'")
 
     header_row = [
-        "Nr KSeF", "Data wystawienia", "Sprzedawca", "NIP sprzedawcy",
+        "Nr KSeF", "Nr faktury", "Data wystawienia", "Sprzedawca", "NIP sprzedawcy",
         "Netto", "VAT", "Brutto", "Termin płatności", "Dni do płatności", "Alert", "Aktualizacja",
         "Oplacona", "Data oplaćenia", "Kwota oplacona", "Kwota pozostala"
     ]
@@ -676,7 +706,7 @@ def write_to_sheets(rows_data):
     rows = [header_row]
     for row in rows_data:
         ksef_number = str(row[0] or "").strip()
-        brutto_value = parse_money_value(row[6] if len(row) > 6 else 0)
+        brutto_value = parse_money_value(row[7] if len(row) > 7 else 0)
         summary = build_ksef_paid_summary(paid_map.get(ksef_number), brutto_value)
         rows.append(row + [
             summary["status"],
@@ -685,19 +715,19 @@ def write_to_sheets(rows_data):
             summary["remainingAmount"] if brutto_value > 0 else "",
         ])
 
-    # Wyczyść arkusz przez batchClear, potem zapisz cały zakres A:O.
+    # Wyczyść arkusz przez batchClear, potem zapisz cały zakres A:P.
     # Dzięki temu statusy opłacenia nie "zostają" na starych wierszach po sortowaniu.
     requests.post(
         f"https://sheets.googleapis.com/v4/spreadsheets/{SPREADSHEET_ID}/values:batchClear",
         headers=hdrs,
-        json={"ranges": [f"{SHEET_NAME}!A1:O2000"]}
+        json={"ranges": [f"{SHEET_NAME}!A1:P2000"]}
     )
     resp = requests.post(
         f"https://sheets.googleapis.com/v4/spreadsheets/{SPREADSHEET_ID}/values:batchUpdate",
         headers=hdrs,
         json={
             "valueInputOption": "RAW",
-            "data": [{"range": f"{SHEET_NAME}!A1:O2000", "values": rows}]
+            "data": [{"range": f"{SHEET_NAME}!A1:P2000", "values": rows}]
         }
     )
     if not resp.ok:
@@ -767,24 +797,29 @@ def main():
 
             # Sprawdź cache
             termin_z_cache = ""
+            numer_faktury_cache = ""
             if ksef_number in existing:
                 cached = existing[ksef_number]
-                termin_z_cache = cached[7] if len(cached) > 7 else ""
+                cached_layout = get_cached_ksef_layout(cached)
+                due_idx = cached_layout["due_idx"]
+                invoice_idx = cached_layout["invoice_idx"]
+                termin_z_cache = cached[due_idx] if len(cached) > due_idx else ""
+                numer_faktury_cache = cached[invoice_idx] if invoice_idx is not None and len(cached) > invoice_idx else ""
 
             # Pobierz XML dla każdej faktury bez terminu w cache.
             # Dzięki temu skrypt uzupełnia wszystkie możliwe terminy w jednym uruchomieniu.
             parsed = {}
             if termin_z_cache:
                 # Mamy termin z cache — użyj go bezpośrednio
-                parsed = {"termin_platnosci": termin_z_cache}
+                parsed = {"termin_platnosci": termin_z_cache, "numer_faktury": numer_faktury_cache}
                 # Wczytaj też inne pola z cache jeśli dostępne
                 cached = existing.get(ksef_number, [])
-                if len(cached) >= 7:
-                    parsed["sprzedawca_nazwa"] = cached[2] if len(cached) > 2 else ""
-                    parsed["sprzedawca_nip"]   = cached[3] if len(cached) > 3 else ""
-                    parsed["netto"]            = cached[4] if len(cached) > 4 else ""
-                    parsed["vat"]              = cached[5] if len(cached) > 5 else ""
-                    parsed["brutto"]           = cached[6] if len(cached) > 6 else ""
+                cached_layout = get_cached_ksef_layout(cached)
+                parsed["sprzedawca_nazwa"] = cached[cached_layout["seller_idx"]] if len(cached) > cached_layout["seller_idx"] else ""
+                parsed["sprzedawca_nip"]   = cached[cached_layout["nip_idx"]] if len(cached) > cached_layout["nip_idx"] else ""
+                parsed["netto"]            = cached[cached_layout["netto_idx"]] if len(cached) > cached_layout["netto_idx"] else ""
+                parsed["vat"]              = cached[cached_layout["vat_idx"]] if len(cached) > cached_layout["vat_idx"] else ""
+                parsed["brutto"]           = cached[cached_layout["brutto_idx"]] if len(cached) > cached_layout["brutto_idx"] else ""
             elif ksef_number:
                 try:
                     time.sleep(XML_FETCH_DELAY_SEC)
@@ -800,6 +835,7 @@ def main():
                     print(f"⚠️ Brak XML {ksef_number[-12:]}: {e}")
 
             sprzedawca = parsed.get("sprzedawca_nazwa") or sprzedawca_meta
+            numer_faktury = parsed.get("numer_faktury", "")
             nip_sp     = parsed.get("sprzedawca_nip", "") or nip_meta
             netto      = parsed.get("netto", "") or netto_meta
             vat        = parsed.get("vat", "")
@@ -821,6 +857,7 @@ def main():
 
             rows.append([
                 ksef_number,
+                numer_faktury,
                 inv_date,
                 sprzedawca,
                 nip_sp,
