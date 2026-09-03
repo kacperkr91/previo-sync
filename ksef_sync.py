@@ -37,6 +37,8 @@ XML_FETCH_DELAY_SEC  = 6   # bezpieczny odstęp między pobraniami XML z KSeF
 QUERY_CHUNK_DAYS     = 7   # krótsze zakresy są stabilniejsze dla API KSeF
 XML_FETCH_RETRIES    = 8
 XML_RATE_LIMIT_WAIT  = 30
+KSEF_LOOKBACK_DAYS   = max(int(os.environ.get("KSEF_LOOKBACK_DAYS", "60") or "60"), 1)
+KSEF_DATE_FROM       = (os.environ.get("KSEF_DATE_FROM", "") or "").strip()
 
 # ── KSEF AUTH ────────────────────────────────────────────────────────────────
 def ksef_get_access_token():
@@ -97,6 +99,15 @@ def _format_ksef_day(value):
     if not day_value:
         raise ValueError(f"Nieprawidłowa data KSeF: {value!r}")
     return day_value.isoformat()
+
+
+def resolve_ksef_date_from():
+    if KSEF_DATE_FROM:
+      try:
+          return _parse_ksef_day(KSEF_DATE_FROM)
+      except Exception as e:
+          raise ValueError(f"Nieprawidłowe KSEF_DATE_FROM: {KSEF_DATE_FROM!r}") from e
+    return date.today() - timedelta(days=KSEF_LOOKBACK_DAYS)
 
 
 def _format_ksef_datetime_start(value):
@@ -614,6 +625,55 @@ def get_cached_ksef_layout(cached_row):
     }
 
 
+def normalize_existing_sheet_row(row):
+    if not row:
+        return None
+    padded = list(row) + [""] * max(0, 16 - len(row))
+    ksef_number = str(padded[0] or "").strip()
+    if not ksef_number:
+        return None
+
+    layout = get_cached_ksef_layout(padded)
+    invoice_idx = layout["invoice_idx"]
+    issue_idx = layout["issue_idx"]
+    seller_idx = layout["seller_idx"]
+    nip_idx = layout["nip_idx"]
+    netto_idx = layout["netto_idx"]
+    vat_idx = layout["vat_idx"]
+    brutto_idx = layout["brutto_idx"]
+    due_idx = layout["due_idx"]
+
+    normalized = [
+        ksef_number,
+        padded[invoice_idx] if invoice_idx is not None and len(padded) > invoice_idx else "",
+        padded[issue_idx] if len(padded) > issue_idx else "",
+        padded[seller_idx] if len(padded) > seller_idx else "",
+        padded[nip_idx] if len(padded) > nip_idx else "",
+        padded[netto_idx] if len(padded) > netto_idx else "",
+        padded[vat_idx] if len(padded) > vat_idx else "",
+        padded[brutto_idx] if len(padded) > brutto_idx else "",
+        padded[due_idx] if len(padded) > due_idx else "",
+        "",
+        "",
+        padded[11] if len(padded) > 11 else "",
+    ]
+    return normalized
+
+
+def compute_due_columns(termin_str, today):
+    dni_do = ""
+    alert = "NIE"
+    if termin_str:
+        try:
+            termin_date = date.fromisoformat(str(termin_str)[:10])
+            dni_do = (termin_date - today).days
+            if dni_do <= ALERT_DAYS:
+                alert = "TAK"
+        except Exception:
+            pass
+    return dni_do, alert
+
+
 def normalize_ksef_paid_entry(entry, brutto_value):
     if not isinstance(entry, dict):
         return {"payments": [], "updatedAt": ""}
@@ -748,19 +808,23 @@ def main():
     print("Sesja aktywna.")
 
     try:
-        # Pobierz faktury z ostatnich 60 dni.
-        # Używamy czystych dat i krótszych chunków, bo API KSeF potrafi
-        # odrzucać szerokie zakresy przekazane jako datetime.
-        date_from = date.today() - timedelta(days=60)
+        # Możemy działać w 2 trybach:
+        # - standardowo: ostatnie N dni
+        # - odbudowa historii: od sztywnej daty startowej KSEF_DATE_FROM
+        date_from = resolve_ksef_date_from()
         date_to = date.today()
+        print(f"Zakres pobierania KSeF: {date_from.isoformat()} -> {date_to.isoformat()}")
         invoices = ksef_query_invoices(access_token, date_from=date_from, date_to=date_to)
 
-        # Wczytaj istniejące dane z arkusza (cache terminów)
+        # Wczytaj istniejące dane z arkusza.
+        # To jest nasza siatka bezpieczeństwa:
+        # - zachowujemy starsze faktury spoza bieżącego okna pobierania
+        # - nie gubimy numerów faktur / terminów już zapisanych wcześniej
         existing = {}
         try:
             token_s = get_sheets_token()
             hdrs_s = {"Authorization": f"Bearer {token_s}"}
-            url_range_read = requests.utils.quote(f"{SHEET_NAME}!A2:K2000")
+            url_range_read = requests.utils.quote(f"{SHEET_NAME}!A2:P5000")
             r_read = requests.get(
                 f"https://sheets.googleapis.com/v4/spreadsheets/{SPREADSHEET_ID}/values/{url_range_read}",
                 headers=hdrs_s
@@ -843,18 +907,7 @@ def main():
             brutto     = parsed.get("brutto", "") or brutto_meta
             termin_str = parsed.get("termin_platnosci", "")
 
-            # Oblicz dni do płatności
-            dni_do = ""
-            alert  = "NIE"
-            if termin_str:
-                try:
-                    # Format może być YYYY-MM-DD lub YYYY-MM-DDThh:mm:ss
-                    termin_date = date.fromisoformat(termin_str[:10])
-                    dni_do = (termin_date - today).days
-                    if dni_do <= ALERT_DAYS:
-                        alert = "TAK"
-                except Exception:
-                    pass
+            dni_do, alert = compute_due_columns(termin_str, today)
 
             rows.append([
                 ksef_number,
@@ -871,18 +924,42 @@ def main():
                 datetime.now().strftime("%Y-%m-%d %H:%M"),
             ])
 
+        fetched_numbers = {str(row[0] or "").strip() for row in rows if row and row[0]}
+        preserved_rows = 0
+        for ksef_number, cached in existing.items():
+            normalized = normalize_existing_sheet_row(cached)
+            if not normalized:
+                continue
+            if ksef_number in fetched_numbers:
+                continue
+            dni_do, alert = compute_due_columns(normalized[8], today)
+            normalized[9] = dni_do
+            normalized[10] = alert
+            if not normalized[11]:
+                normalized[11] = datetime.now().strftime("%Y-%m-%d %H:%M")
+            rows.append(normalized)
+            preserved_rows += 1
+
         if not rows:
             print("Brak faktur zakupowych — nic do zapisania.")
             return
 
-        # Sortuj po terminie płatności
-        rows.sort(key=lambda r: str(r[7]) if r[7] else "9999")
+        # Sortuj po terminie płatności, potem po dacie wystawienia.
+        rows.sort(key=lambda r: (
+            str(r[8] or "9999-12-31"),
+            str(r[2] or "9999-12-31"),
+            str(r[3] or ""),
+            str(r[0] or ""),
+        ))
+
+        if preserved_rows:
+            print(f"Zachowano {preserved_rows} starszych faktur z arkusza spoza bieżącego okna KSeF")
 
         alerts = [r for r in rows if r[9] == "TAK"]
         if alerts:
             print(f"\n🚨 Faktury do opłacenia w ciągu {ALERT_DAYS} dni: {len(alerts)}")
             for r in alerts:
-                print(f"  {r[2]} — termin: {r[7]} (za {r[8]} dni), kwota: {r[6]}")
+                print(f"  {r[2]} — termin: {r[8]} (za {r[9]} dni), kwota: {r[7]}")
 
         write_to_sheets(rows)
 
