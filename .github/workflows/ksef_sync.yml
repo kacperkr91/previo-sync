@@ -2,8 +2,8 @@ name: KSeF Sync
 
 on:
   schedule:
-    - cron: '0 */2 * * *'
-  workflow_dispatch:
+    - cron: '0 */2 * * *'  # co 2 godziny
+  workflow_dispatch:        # możliwość ręcznego uruchomienia
 
 jobs:
   ksef-sync:
@@ -25,7 +25,8 @@ jobs:
 
       - name: Run KSeF sync
         env:
-          KSEF_TOKEN: ${{ secrets.KSEF_TOKEN }}
+          KSEF_TOKEN:          ${{ secrets.KSEF_TOKEN }}
           KSEF_SPREADSHEET_ID: ${{ secrets.KSEF_SPREADSHEET_ID }}
-          GS_SA_JSON_B64: ${{ secrets.GS_SA_JSON_B64 }}
+          GS_SA_JSON_B64:      ${{ secrets.GS_SA_JSON_B64 }}
+          KSEF_DATE_FROM:      2024-08-01
         run: python ksef_sync.py
