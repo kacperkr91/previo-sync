@@ -34,9 +34,11 @@ KSEF_TOKEN           = os.environ["KSEF_TOKEN"]
 GS_SA_JSON_B64       = os.environ.get("GS_SA_JSON_B64", "")
 ALERT_DAYS           = 7   # alert jeśli termin płatności za mniej niż 7 dni
 XML_FETCH_DELAY_SEC  = 6   # bezpieczny odstęp między pobraniami XML z KSeF
-QUERY_CHUNK_DAYS     = 7   # krótsze zakresy są stabilniejsze dla API KSeF
+QUERY_CHUNK_DAYS     = max(int(os.environ.get("KSEF_QUERY_CHUNK_DAYS", "3") or "3"), 1)
 XML_FETCH_RETRIES    = 8
 XML_RATE_LIMIT_WAIT  = 30
+QUERY_RATE_LIMIT_RETRIES = max(int(os.environ.get("KSEF_QUERY_RETRIES", "8") or "8"), 1)
+QUERY_RATE_LIMIT_WAIT    = max(int(os.environ.get("KSEF_QUERY_WAIT", "20") or "20"), 1)
 KSEF_LOOKBACK_DAYS   = max(int(os.environ.get("KSEF_LOOKBACK_DAYS", "60") or "60"), 1)
 KSEF_DATE_FROM       = (os.environ.get("KSEF_DATE_FROM", "") or "").strip()
 
@@ -149,26 +151,53 @@ def _ksef_query_invoices_chunk(access_token, date_from, date_to):
                 page_offset = 0
                 all_invoices = []
                 while True:
-                    resp = client.invoices.query_invoice_metadata_by_date_range(
-                        subject_type=InvoiceQuerySubjectType.SUBJECT2,  # jako nabywca
-                        date_type=date_type,
-                        date_from=range_from,
-                        date_to=range_to,
-                        access_token=access_token,
-                        page_offset=page_offset,
-                        page_size=page_size,
-                    )
+                    attempt = 1
+                    while True:
+                        try:
+                            resp = client.invoices.query_invoice_metadata_by_date_range(
+                                subject_type=InvoiceQuerySubjectType.SUBJECT2,  # jako nabywca
+                                date_type=date_type,
+                                date_from=range_from,
+                                date_to=range_to,
+                                access_token=access_token,
+                                page_offset=page_offset,
+                                page_size=page_size,
+                            )
+                            break
+                        except Exception as e:
+                            last_error = e
+                            error_text = str(e)
+                            if "429" in error_text or "Too Many Requests" in error_text:
+                                if attempt >= QUERY_RATE_LIMIT_RETRIES:
+                                    print(
+                                        f"⚠️ KSeF odrzucił query dla date_type={getattr(date_type, 'value', date_type)} "
+                                        f"i zakresu {range_from} -> {range_to}: {e}",
+                                        flush=True,
+                                    )
+                                    raise
+                                wait_seconds = QUERY_RATE_LIMIT_WAIT * attempt
+                                print(
+                                    f"⏳ KSeF rate limit dla zakresu {range_from} -> {range_to}, "
+                                    f"strona offset {page_offset}. Próba {attempt}/{QUERY_RATE_LIMIT_RETRIES}, "
+                                    f"czekam {wait_seconds}s...",
+                                    flush=True,
+                                )
+                                time.sleep(wait_seconds)
+                                attempt += 1
+                                continue
+                            print(
+                                f"⚠️ KSeF odrzucił query dla date_type={getattr(date_type, 'value', date_type)} "
+                                f"i zakresu {range_from} -> {range_to}: {e}",
+                                flush=True,
+                            )
+                            raise
+
                     batch = resp.invoices or []
                     all_invoices.extend(batch)
                     if len(batch) < page_size or not getattr(resp, 'has_more', False):
                         return all_invoices
                     page_offset += page_size
             except Exception as e:
-                print(
-                    f"⚠️ KSeF odrzucił query dla date_type={getattr(date_type, 'value', date_type)} "
-                    f"i zakresu {range_from} -> {range_to}: {e}",
-                    flush=True,
-                )
                 last_error = e
 
         if last_error:
