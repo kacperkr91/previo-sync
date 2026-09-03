@@ -29,4 +29,8 @@ jobs:
           KSEF_SPREADSHEET_ID: ${{ secrets.KSEF_SPREADSHEET_ID }}
           GS_SA_JSON_B64:      ${{ secrets.GS_SA_JSON_B64 }}
           KSEF_DATE_FROM:      2026-01-01
+          KSEF_QUERY_CHUNK_DAYS: 3
+          KSEF_QUERY_RETRIES: 8
+          KSEF_QUERY_WAIT: 20
+          KSEF_SKIP_FAILED_CHUNKS: 1
         run: python ksef_sync.py
