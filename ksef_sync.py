@@ -41,6 +41,7 @@ QUERY_RATE_LIMIT_RETRIES = max(int(os.environ.get("KSEF_QUERY_RETRIES", "8") or 
 QUERY_RATE_LIMIT_WAIT    = max(int(os.environ.get("KSEF_QUERY_WAIT", "20") or "20"), 1)
 KSEF_LOOKBACK_DAYS   = max(int(os.environ.get("KSEF_LOOKBACK_DAYS", "60") or "60"), 1)
 KSEF_DATE_FROM       = (os.environ.get("KSEF_DATE_FROM", "") or "").strip()
+KSEF_SKIP_FAILED_CHUNKS = (os.environ.get("KSEF_SKIP_FAILED_CHUNKS", "1") or "1").strip().lower() not in ("0", "false", "no")
 
 # ── KSEF AUTH ────────────────────────────────────────────────────────────────
 def ksef_get_access_token():
@@ -206,6 +207,45 @@ def _ksef_query_invoices_chunk(access_token, date_from, date_to):
     return all_invoices
 
 
+def _is_ksef_rate_limit_error(error):
+    error_text = str(error)
+    return "429" in error_text or "Too Many Requests" in error_text
+
+
+def _ksef_query_invoices_chunk_adaptive(access_token, date_from, date_to):
+    """
+    Dla trudnych zakresów KSeF schodzi rekursywnie do mniejszych przedziałów.
+    Dzięki temu jeden zakres z 429 nie wywraca całego przebiegu.
+    """
+    start_day = _parse_ksef_day(date_from)
+    end_day = _parse_ksef_day(date_to)
+    if not start_day or not end_day:
+        raise ValueError(f"Nieprawidłowy zakres adaptacyjny KSeF: {date_from!r} - {date_to!r}")
+
+    try:
+        return _ksef_query_invoices_chunk(access_token, start_day, end_day)
+    except Exception as e:
+        if not _is_ksef_rate_limit_error(e):
+            raise
+        if start_day >= end_day:
+            raise
+
+        midpoint = start_day + timedelta(days=(end_day - start_day).days // 2)
+        left_end = midpoint
+        right_start = midpoint + timedelta(days=1)
+
+        print(
+            f"↘️ Dzielę zakres KSeF po 429: {start_day.isoformat()} -> {end_day.isoformat()} "
+            f"na {start_day.isoformat()} -> {left_end.isoformat()} oraz {right_start.isoformat()} -> {end_day.isoformat()}",
+            flush=True,
+        )
+
+        combined = []
+        combined.extend(_ksef_query_invoices_chunk_adaptive(access_token, start_day, left_end))
+        combined.extend(_ksef_query_invoices_chunk_adaptive(access_token, right_start, end_day))
+        return combined
+
+
 def ksef_query_invoices(access_token, date_from=None, date_to=None):
     """
     Pobiera listę faktur zakupowych (jako nabywca) z KSeF 2.0 przez SDK.
@@ -232,14 +272,22 @@ def ksef_query_invoices(access_token, date_from=None, date_to=None):
         current_end = min(current_start + timedelta(days=QUERY_CHUNK_DAYS - 1), end_day)
         print(f"Pobieranie listy faktur: {current_start.isoformat()} -> {current_end.isoformat()}", flush=True)
         try:
-            batch = _ksef_query_invoices_chunk(
+            batch = _ksef_query_invoices_chunk_adaptive(
                 access_token,
                 date_from=current_start,
                 date_to=current_end,
             )
         except Exception as e:
             print(f"❌ Błąd zapytania KSeF dla zakresu {current_start.isoformat()} -> {current_end.isoformat()}: {e}")
-            raise
+            if not KSEF_SKIP_FAILED_CHUNKS:
+                raise
+            print(
+                f"⚠️ Pomijam problematyczny zakres {current_start.isoformat()} -> {current_end.isoformat()} "
+                f"i zachowuję wcześniejsze dane z arkusza.",
+                flush=True,
+            )
+            current_start = current_end + timedelta(days=1)
+            continue
 
         for inv in batch:
             if hasattr(inv, 'ksef_number'):
@@ -984,11 +1032,11 @@ def main():
         if preserved_rows:
             print(f"Zachowano {preserved_rows} starszych faktur z arkusza spoza bieżącego okna KSeF")
 
-        alerts = [r for r in rows if r[9] == "TAK"]
+        alerts = [r for r in rows if r[10] == "TAK"]
         if alerts:
             print(f"\n🚨 Faktury do opłacenia w ciągu {ALERT_DAYS} dni: {len(alerts)}")
             for r in alerts:
-                print(f"  {r[2]} — termin: {r[8]} (za {r[9]} dni), kwota: {r[7]}")
+                print(f"  {r[3]} — termin: {r[8]} (za {r[9]} dni), kwota: {r[7]}")
 
         write_to_sheets(rows)
 
