@@ -212,6 +212,11 @@ def _is_ksef_rate_limit_error(error):
     return "429" in error_text or "Too Many Requests" in error_text
 
 
+def _is_ksef_auth_error(error):
+    error_text = str(error)
+    return "401" in error_text or "Unauthorized" in error_text or "API error" in error_text
+
+
 def _ksef_query_invoices_chunk_adaptive(access_token, date_from, date_to):
     """
     Dla trudnych zakresów KSeF schodzi rekursywnie do mniejszych przedziałów.
@@ -223,8 +228,17 @@ def _ksef_query_invoices_chunk_adaptive(access_token, date_from, date_to):
         raise ValueError(f"Nieprawidłowy zakres adaptacyjny KSeF: {date_from!r} - {date_to!r}")
 
     try:
-        return _ksef_query_invoices_chunk(access_token, start_day, end_day)
+        invoices = _ksef_query_invoices_chunk(access_token, start_day, end_day)
+        return invoices, access_token
     except Exception as e:
+        if _is_ksef_auth_error(e):
+            print(
+                f"🔄 Odświeżam sesję KSeF dla zakresu {start_day.isoformat()} -> {end_day.isoformat()} po 401...",
+                flush=True,
+            )
+            refreshed_token = ksef_get_access_token()
+            invoices = _ksef_query_invoices_chunk(refreshed_token, start_day, end_day)
+            return invoices, refreshed_token
         if not _is_ksef_rate_limit_error(e):
             raise
         if start_day >= end_day:
@@ -241,9 +255,11 @@ def _ksef_query_invoices_chunk_adaptive(access_token, date_from, date_to):
         )
 
         combined = []
-        combined.extend(_ksef_query_invoices_chunk_adaptive(access_token, start_day, left_end))
-        combined.extend(_ksef_query_invoices_chunk_adaptive(access_token, right_start, end_day))
-        return combined
+        left_batch, current_token = _ksef_query_invoices_chunk_adaptive(access_token, start_day, left_end)
+        combined.extend(left_batch)
+        right_batch, current_token = _ksef_query_invoices_chunk_adaptive(current_token, right_start, end_day)
+        combined.extend(right_batch)
+        return combined, current_token
 
 
 def ksef_query_invoices(access_token, date_from=None, date_to=None):
@@ -267,13 +283,14 @@ def ksef_query_invoices(access_token, date_from=None, date_to=None):
     all_invoices = []
     seen_numbers = set()
     current_start = start_day
+    current_token = access_token
 
     while current_start <= end_day:
         current_end = min(current_start + timedelta(days=QUERY_CHUNK_DAYS - 1), end_day)
         print(f"Pobieranie listy faktur: {current_start.isoformat()} -> {current_end.isoformat()}", flush=True)
         try:
-            batch = _ksef_query_invoices_chunk_adaptive(
-                access_token,
+            batch, current_token = _ksef_query_invoices_chunk_adaptive(
+                current_token,
                 date_from=current_start,
                 date_to=current_end,
             )
@@ -304,7 +321,7 @@ def ksef_query_invoices(access_token, date_from=None, date_to=None):
         current_start = current_end + timedelta(days=1)
 
     print(f"Znaleziono {len(all_invoices)} faktur zakupowych")
-    return all_invoices
+    return all_invoices, current_token
 
 
 def ksef_get_invoice_xml(access_token, ksef_number):
@@ -891,7 +908,7 @@ def main():
         date_from = resolve_ksef_date_from()
         date_to = date.today()
         print(f"Zakres pobierania KSeF: {date_from.isoformat()} -> {date_to.isoformat()}")
-        invoices = ksef_query_invoices(access_token, date_from=date_from, date_to=date_to)
+        invoices, access_token = ksef_query_invoices(access_token, date_from=date_from, date_to=date_to)
 
         # Wczytaj istniejące dane z arkusza.
         # To jest nasza siatka bezpieczeństwa:
