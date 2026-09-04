@@ -24,6 +24,11 @@ PREVIO_HOT_ID = os.environ.get("PREVIO_HOT_ID", "762331")
 SHEET_ID = os.environ["GOOGLE_SHEET_ID"]
 SHEET_NAME = "Previo"
 SERVICE_ACCOUNT_JSON = os.environ["GOOGLE_SERVICE_ACCOUNT"]
+DEBUG_PREVIO_RESERVATION = os.environ.get("DEBUG_PREVIO_RESERVATION", "").strip()
+DEBUG_PREVIO_XML_PATH = os.environ.get(
+    "DEBUG_PREVIO_XML_PATH",
+    os.path.join(os.path.dirname(__file__), "previo_reservation_debug.xml"),
+).strip()
 
 # Fetch reservations by checkout date starting from 2025-01-01.
 DATE_FROM = "2025-01-01"
@@ -401,7 +406,7 @@ def fetch_reservations():
                 timeout=FETCH_TIMEOUT,
             )
             resp.raise_for_status()
-            return parse_reservations(resp.content)
+            return resp.content
         except requests.exceptions.ReadTimeout as err:
             last_error = err
             if attempt == FETCH_MAX_RETRIES:
@@ -417,6 +422,32 @@ def fetch_reservations():
             print(f"    Błąd requestu z Previo: {err}. Ponawiam za {sleep_seconds}s...")
             time.sleep(sleep_seconds)
     raise last_error
+
+
+def write_debug_reservation_xml(xml_bytes):
+    target = DEBUG_PREVIO_RESERVATION
+    if not target:
+        return
+
+    root = ET.fromstring(xml_bytes)
+    target_norm = normalize_text(target)
+    matched = None
+
+    for res in root.findall(".//reservation"):
+        res_id = str(res.findtext("resId", "") or "").strip()
+        voucher = str(res.findtext("voucher", "") or "").strip()
+        if normalize_text(res_id) == target_norm or normalize_text(voucher) == target_norm:
+            matched = res
+            break
+
+    if matched is None:
+        print(f"Debug Previo XML: nie znaleziono rezerwacji '{target}' w aktualnym zakresie.")
+        return
+
+    xml_text = ET.tostring(matched, encoding="unicode")
+    with open(DEBUG_PREVIO_XML_PATH, "w", encoding="utf-8") as handle:
+        handle.write(xml_text)
+    print(f"Debug Previo XML zapisany do: {DEBUG_PREVIO_XML_PATH}")
 
 
 def parse_reservations(xml_bytes):
@@ -603,7 +634,9 @@ def write_to_sheets(service, rows):
 
 def main():
     print(f"Fetching reservations {DATE_FROM} - {DATE_TO}...")
-    rows = fetch_reservations()
+    xml_body = fetch_reservations()
+    write_debug_reservation_xml(xml_body)
+    rows = parse_reservations(xml_body)
     print(f"Parsed {len(rows)} reservations")
 
     service = get_sheets_service()
