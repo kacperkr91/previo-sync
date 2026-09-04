@@ -5,6 +5,14 @@ on:
     - cron: '0 */2 * * *'  # co 2 godziny
   workflow_dispatch:        # możliwość ręcznego uruchomienia
 
+# Ten sam "group" co w ksef_sync_backfill.yml — oba workflow'y czytają i
+# nadpisują całą zakładkę KSeF, więc nie mogą działać w tym samym czasie.
+# cancel-in-progress: false, żeby nowo wywołany run CZEKAŁ w kolejce zamiast
+# przerywać (i tak zostawiać niedokończony) zapis w toku.
+concurrency:
+  group: ksef-sheet-sync
+  cancel-in-progress: false
+
 jobs:
   ksef-sync:
     runs-on: ubuntu-latest
