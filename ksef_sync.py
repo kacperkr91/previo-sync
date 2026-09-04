@@ -29,6 +29,7 @@ KSEF_API_BASE        = "https://api.ksef.mf.gov.pl/api/v2"    # produkcja KSeF 2
 # KSEF_API_BASE      = "https://api-test.ksef.mf.gov.pl/api/v2"  # test
 SHEET_NAME           = "KSeF"
 KSEF_PAID_SHEET_NAME = "KsefPaid"
+EXISTING_ROWS_MAX    = 20000  # ile wierszy arkusza KSeF bierzemy pod uwagę przy odczycie/zapisie
 SPREADSHEET_ID       = os.environ["KSEF_SPREADSHEET_ID"]
 KSEF_TOKEN           = os.environ["KSEF_TOKEN"]
 GS_SA_JSON_B64       = os.environ.get("GS_SA_JSON_B64", "")
@@ -836,18 +837,49 @@ def build_ksef_paid_summary(entry, brutto_value):
     }
 
 
-def read_ksef_paid_map(token):
+def _sheets_get_values(token, range_a1, retries=3, wait_seconds=5):
+    """
+    Odczyt zakresu z Google Sheets z retry.
+    Zwraca (values, ok). Gdy ok=False, wywołujący NIE MOŻE potraktować tego
+    jak 'arkusz jest pusty' — to oznacza, że odczyt się nie powiódł i nie
+    wolno na tej podstawie niczego kasować/nadpisywać w arkuszu.
+    """
     hdrs = {"Authorization": f"Bearer {token}"}
-    url_range = requests.utils.quote(f"{KSEF_PAID_SHEET_NAME}!A2")
-    resp = requests.get(
-        f"https://sheets.googleapis.com/v4/spreadsheets/{SPREADSHEET_ID}/values/{url_range}",
-        headers=hdrs,
-    )
-    if not resp.ok:
-        print(f"Nie udało się wczytać {KSEF_PAID_SHEET_NAME}: {resp.status_code} {resp.text[:300]}")
-        return {}
+    url_range = requests.utils.quote(range_a1)
+    last_error = None
+    for attempt in range(1, retries + 1):
+        try:
+            resp = requests.get(
+                f"https://sheets.googleapis.com/v4/spreadsheets/{SPREADSHEET_ID}/values/{url_range}",
+                headers=hdrs,
+                timeout=60,
+            )
+            if resp.ok:
+                return resp.json().get("values", []), True
+            last_error = f"{resp.status_code} {resp.text[:300]}"
+        except Exception as e:
+            last_error = str(e)
+        if attempt < retries:
+            print(f"⏳ Odczyt {range_a1} nieudany (próba {attempt}/{retries}): {last_error}. Ponawiam...", flush=True)
+            time.sleep(wait_seconds * attempt)
+    print(f"❌ Nie udało się odczytać {range_a1} po {retries} próbach: {last_error}")
+    return None, False
 
-    values = resp.json().get("values", [])
+
+def read_ksef_paid_map(token):
+    """
+    Wczytuje mapę wpłat z zakładki KsefPaid (to jest źródło prawdy dla
+    dat/statusów opłacenia w arkuszu KSeF). Jeśli odczyt się nie powiedzie,
+    rzucamy wyjątek zamiast cicho zwracać {} — inaczej write_to_sheets
+    skasowałby statusy i daty opłacenia wszystkim fakturom w tym przebiegu.
+    """
+    values, ok = _sheets_get_values(token, f"{KSEF_PAID_SHEET_NAME}!A2", retries=3, wait_seconds=5)
+    if not ok:
+        raise RuntimeError(
+            f"Nie udało się wiarygodnie odczytać {KSEF_PAID_SHEET_NAME} — przerywam zapis, "
+            f"żeby nie skasować statusów i dat opłacenia faktur."
+        )
+
     raw = values[0][0] if values and values[0] else ""
     if not raw:
         return {}
@@ -855,8 +887,27 @@ def read_ksef_paid_map(token):
         data = json.loads(raw)
         return data if isinstance(data, dict) else {}
     except Exception as e:
-        print(f"Nie udało się sparsować JSON z {KSEF_PAID_SHEET_NAME}: {e}")
-        return {}
+        raise RuntimeError(f"Nie udało się sparsować JSON z {KSEF_PAID_SHEET_NAME}: {e}") from e
+
+
+def read_existing_ksef_rows(token):
+    """
+    Odczyt istniejących wierszy zakładki KSeF (numer KSeF -> cały wiersz).
+    Zwraca (dict, ok). ok=False = odczyt się nie powiódł; NIE WOLNO tego
+    traktować jak 'arkusz jest pusty', bo prowadziłoby to do skasowania
+    historycznych faktur przy kolejnym zapisie (values:batchUpdate).
+    """
+    values, ok = _sheets_get_values(token, f"{SHEET_NAME}!A2:P{EXISTING_ROWS_MAX}", retries=3, wait_seconds=5)
+    if not ok:
+        return {}, False
+
+    existing = {}
+    for row in values:
+        if row and len(row) >= 8:
+            key = str(row[0] or "").strip()
+            if key:
+                existing[key] = row
+    return existing, True
 
 
 def write_to_sheets(rows_data):
@@ -893,25 +944,40 @@ def write_to_sheets(rows_data):
             summary["remainingAmount"] if brutto_value > 0 else "",
         ])
 
-    # Wyczyść arkusz przez batchClear, potem zapisz cały zakres A:P.
-    # Dzięki temu statusy opłacenia nie "zostają" na starych wierszach po sortowaniu.
-    requests.post(
-        f"https://sheets.googleapis.com/v4/spreadsheets/{SPREADSHEET_ID}/values:batchClear",
-        headers=hdrs,
-        json={"ranges": [f"{SHEET_NAME}!A1:P2000"]}
-    )
+    # Najpierw ZAPISZ nowe dane (nadpisuje komórki w miejscu), a dopiero PO
+    # udanym zapisie wyczyść nadmiarowy "ogon" poniżej nowych danych.
+    # Robimy to w tej kolejności celowo: jeśli zapis się nie powiedzie
+    # (błąd sieci/API), stary arkusz zostaje NIETKNIĘTY zamiast być
+    # skasowany bez odtworzenia danych (to był realny scenariusz utraty
+    # faktur przy starej kolejności: najpierw clear, potem write).
+    write_range = f"{SHEET_NAME}!A1:P{len(rows)}"
     resp = requests.post(
         f"https://sheets.googleapis.com/v4/spreadsheets/{SPREADSHEET_ID}/values:batchUpdate",
         headers=hdrs,
         json={
             "valueInputOption": "RAW",
-            "data": [{"range": f"{SHEET_NAME}!A1:P2000", "values": rows}]
+            "data": [{"range": write_range, "values": rows}]
         }
     )
     if not resp.ok:
         print(f"Sheets error {resp.status_code}: {resp.text[:500]}")
     resp.raise_for_status()
     print(f"✅ Zapisano {len(rows_data)} faktur do arkusza '{SHEET_NAME}'")
+
+    # Wyczyść WYŁĄCZNIE wiersze poniżej nowo zapisanych danych (stary "ogon"
+    # z poprzedniego, dłuższego zapisu). Niepowodzenie tego kroku jest tylko
+    # kosmetyczne (mogą zostać puste-już-nieaktualne wiersze poniżej danych),
+    # więc nie przerywamy na tym przebiegu.
+    trailing_from = len(rows) + 1
+    if trailing_from <= EXISTING_ROWS_MAX:
+        clear_resp = requests.post(
+            f"https://sheets.googleapis.com/v4/spreadsheets/{SPREADSHEET_ID}/values:batchClear",
+            headers=hdrs,
+            json={"ranges": [f"{SHEET_NAME}!A{trailing_from}:P{EXISTING_ROWS_MAX}"]}
+        )
+        if not clear_resp.ok:
+            print(f"⚠️ Nie udało się wyczyścić starych wierszy poniżej danych: "
+                  f"{clear_resp.status_code} {clear_resp.text[:300]}")
 
 
 # ── MAIN ─────────────────────────────────────────────────────────────────────
@@ -939,22 +1005,16 @@ def main():
         # To jest nasza siatka bezpieczeństwa:
         # - zachowujemy starsze faktury spoza bieżącego okna pobierania
         # - nie gubimy numerów faktur / terminów już zapisanych wcześniej
-        existing = {}
-        try:
-            token_s = get_sheets_token()
-            hdrs_s = {"Authorization": f"Bearer {token_s}"}
-            url_range_read = requests.utils.quote(f"{SHEET_NAME}!A2:P5000")
-            r_read = requests.get(
-                f"https://sheets.googleapis.com/v4/spreadsheets/{SPREADSHEET_ID}/values/{url_range_read}",
-                headers=hdrs_s
-            )
-            if r_read.ok:
-                for row in r_read.json().get("values", []):
-                    if row and len(row) >= 8:
-                        existing[row[0]] = row  # ksef_number -> cały wiersz
+        # WAŻNE: jeśli ten odczyt się nie powiedzie, existing_ok=False i NIE
+        # wolno traktować existing={} jak "arkusz jest pusty" — tuż przed
+        # zapisem robimy świeży odczyt i w razie potrzeby przerywamy (patrz niżej).
+        sheets_token = get_sheets_token()
+        existing, existing_ok = read_existing_ksef_rows(sheets_token)
+        if existing_ok:
             print(f"Wczytano {len(existing)} istniejących wierszy z arkusza")
-        except Exception as e:
-            print(f"Nie udało się wczytać cache: {e}")
+        else:
+            print("⚠️ Nie udało się wiarygodnie wczytać istniejącego arkusza KSeF na starcie. "
+                  "Kontynuuję pobieranie faktur z KSeF — spróbuję odczytać arkusz ponownie tuż przed zapisem.")
 
         xml_fetched = 0
         rows = []
@@ -1050,6 +1110,30 @@ def main():
             ])
 
         fetched_numbers = {str(row[0] or "").strip() for row in rows if row and row[0]}
+
+        # Odśwież migawkę arkusza TUŻ PRZED zapisem — minimalizuje okno wyścigu
+        # z równoległym uruchomieniem (np. ręczny backfill w trakcie zwykłego
+        # syncu, mimo blokady na poziomie GitHub Actions). Jeśli świeży odczyt
+        # się powiedzie, korzystamy z niego (najbardziej aktualny stan). Jeśli
+        # się nie powiedzie, korzystamy z wcześniejszej migawki, o ile ta się
+        # powiodła. Jeśli OBIE migawki zawiodły, przerywamy: nie wolno zapisać
+        # arkusza (batchUpdate skasuje wszystko poza fetched_numbers) bez
+        # wiarygodnej wiedzy o tym, jakie faktury już tam są.
+        try:
+            fresh_token = get_sheets_token()  # świeży token na wypadek długiego przebiegu (token JWT wygasa po ~1h)
+        except Exception as e:
+            fresh_token = sheets_token
+            print(f"⚠️ Nie udało się odświeżyć tokenu Sheets przed finalnym odczytem, używam poprzedniego: {e}")
+        fresh_existing, fresh_ok = read_existing_ksef_rows(fresh_token)
+        if fresh_ok:
+            existing = fresh_existing
+            existing_ok = True
+        if not existing_ok:
+            print("❌ Nie udało się wiarygodnie odczytać istniejącego arkusza KSeF "
+                  "(ani na starcie, ani tuż przed zapisem). PRZERYWAM bez zapisu, "
+                  "żeby nie skasować faktur już zapisanych w arkuszu.")
+            return
+
         preserved_rows = 0
         for ksef_number, cached in existing.items():
             normalized = normalize_existing_sheet_row(cached)
