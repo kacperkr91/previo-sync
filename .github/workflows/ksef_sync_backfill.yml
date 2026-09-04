@@ -1,0 +1,37 @@
+name: KSeF Sync Backfill
+
+on:
+  workflow_dispatch:
+
+jobs:
+  ksef-sync-backfill:
+    runs-on: ubuntu-latest
+    env:
+      TZ: Europe/Warsaw
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: pip install requests cryptography "ksef-client"
+
+      - name: Run KSeF backfill
+        env:
+          KSEF_TOKEN:             ${{ secrets.KSEF_TOKEN }}
+          KSEF_SPREADSHEET_ID:    ${{ secrets.KSEF_SPREADSHEET_ID }}
+          GS_SA_JSON_B64:         ${{ secrets.GS_SA_JSON_B64 }}
+          KSEF_MODE:              backfill
+          KSEF_DATE_FROM:         2026-03-01
+          KSEF_QUERY_CHUNK_DAYS:  3
+          KSEF_QUERY_RETRIES:     4
+          KSEF_QUERY_WAIT:        15
+          KSEF_SKIP_FAILED_CHUNKS: 1
+          KSEF_XML_ONLY_MISSING:  1
+          KSEF_XML_MAX_FETCH:     120
+        run: python ksef_sync.py
