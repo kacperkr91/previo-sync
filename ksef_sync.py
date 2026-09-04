@@ -40,8 +40,14 @@ XML_FETCH_RETRIES    = 8
 XML_RATE_LIMIT_WAIT  = 30
 QUERY_RATE_LIMIT_RETRIES = max(int(os.environ.get("KSEF_QUERY_RETRIES", "8") or "8"), 1)
 QUERY_RATE_LIMIT_WAIT    = max(int(os.environ.get("KSEF_QUERY_WAIT", "20") or "20"), 1)
+# Dodatkowa pauza PO każdym zakresie (udanym lub nie), żeby nie wyczerpywać
+# skumulowanego limitu KSeF w gęstych okresach (patrz: seria kolejnych 429
+# ciągnąca się przez wiele tygodni podczas backfillu). Domyślnie 0 = brak
+# zmiany zachowania dla normalnych przebiegów.
+QUERY_CHUNK_DELAY_SEC = max(float(os.environ.get("KSEF_QUERY_CHUNK_DELAY", "0") or "0"), 0)
 KSEF_LOOKBACK_DAYS   = max(int(os.environ.get("KSEF_LOOKBACK_DAYS", "60") or "60"), 1)
 KSEF_DATE_FROM       = (os.environ.get("KSEF_DATE_FROM", "") or "").strip()
+KSEF_DATE_TO         = (os.environ.get("KSEF_DATE_TO", "") or "").strip()
 KSEF_SKIP_FAILED_CHUNKS = (os.environ.get("KSEF_SKIP_FAILED_CHUNKS", "1") or "1").strip().lower() not in ("0", "false", "no")
 KSEF_AUTH_RETRIES    = max(int(os.environ.get("KSEF_AUTH_RETRIES", "2") or "2"), 1)
 KSEF_MODE            = (os.environ.get("KSEF_MODE", "daily") or "daily").strip().lower()
@@ -118,6 +124,20 @@ def resolve_ksef_date_from():
     if KSEF_MODE == "backfill":
         return date.today().replace(month=1, day=1)
     return date.today() - timedelta(days=KSEF_LOOKBACK_DAYS)
+
+
+def resolve_ksef_date_to():
+    """
+    Opcjonalne górne ograniczenie zakresu (np. do celowanego doganiania
+    konkretnego, wcześniej pomijanego okresu bez przeciągania całego
+    backfillu do dzisiaj). Domyślnie brak = do dzisiaj.
+    """
+    if KSEF_DATE_TO:
+        try:
+            return _parse_ksef_day(KSEF_DATE_TO)
+        except Exception as e:
+            raise ValueError(f"Nieprawidłowe KSEF_DATE_TO: {KSEF_DATE_TO!r}") from e
+    return date.today()
 
 
 def _format_ksef_datetime_start(value):
@@ -329,6 +349,8 @@ def ksef_query_invoices(access_token, date_from=None, date_to=None):
 
         if not chunk_done:
             current_start = current_end + timedelta(days=1)
+            if QUERY_CHUNK_DELAY_SEC:
+                time.sleep(QUERY_CHUNK_DELAY_SEC)
             continue
 
         for inv in batch:
@@ -344,6 +366,8 @@ def ksef_query_invoices(access_token, date_from=None, date_to=None):
             all_invoices.append(inv)
 
         current_start = current_end + timedelta(days=1)
+        if QUERY_CHUNK_DELAY_SEC:
+            time.sleep(QUERY_CHUNK_DELAY_SEC)
 
     print(f"Znaleziono {len(all_invoices)} faktur zakupowych")
     return all_invoices, current_token
@@ -996,7 +1020,7 @@ def main():
         # - standardowo: ostatnie N dni
         # - odbudowa historii: od sztywnej daty startowej KSEF_DATE_FROM
         date_from = resolve_ksef_date_from()
-        date_to = date.today()
+        date_to = resolve_ksef_date_to()
         print(f"Tryb KSeF: {KSEF_MODE}")
         print(f"Zakres pobierania KSeF: {date_from.isoformat()} -> {date_to.isoformat()}")
         invoices, access_token = ksef_query_invoices(access_token, date_from=date_from, date_to=date_to)
