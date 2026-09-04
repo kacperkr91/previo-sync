@@ -2,6 +2,20 @@ name: KSeF Sync Backfill
 
 on:
   workflow_dispatch:
+    inputs:
+      date_from:
+        description: "Data początkowa backfillu (RRRR-MM-DD). Zostaw domyślną, jeśli nie wiesz co wpisać."
+        required: false
+        default: "2026-03-01"
+
+# Ten sam "group" co w ksef_sync.yml — oba workflow'y czytają i nadpisują
+# całą zakładkę KSeF, więc nie mogą działać w tym samym czasie (to był jeden
+# z głównych powodów znikania starych faktur: nakładające się przebiegi
+# nadpisywały nawzajem swoje zmiany). cancel-in-progress: false, żeby nowo
+# wywołany run CZEKAŁ w kolejce zamiast przerywać zapis w toku.
+concurrency:
+  group: ksef-sheet-sync
+  cancel-in-progress: false
 
 jobs:
   ksef-sync-backfill:
@@ -27,7 +41,7 @@ jobs:
           KSEF_SPREADSHEET_ID:    ${{ secrets.KSEF_SPREADSHEET_ID }}
           GS_SA_JSON_B64:         ${{ secrets.GS_SA_JSON_B64 }}
           KSEF_MODE:              backfill
-          KSEF_DATE_FROM:         2026-03-01
+          KSEF_DATE_FROM:         ${{ github.event.inputs.date_from || '2026-03-01' }}
           KSEF_QUERY_CHUNK_DAYS:  3
           KSEF_QUERY_RETRIES:     4
           KSEF_QUERY_WAIT:        15
