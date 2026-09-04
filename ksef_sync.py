@@ -42,6 +42,10 @@ QUERY_RATE_LIMIT_WAIT    = max(int(os.environ.get("KSEF_QUERY_WAIT", "20") or "2
 KSEF_LOOKBACK_DAYS   = max(int(os.environ.get("KSEF_LOOKBACK_DAYS", "60") or "60"), 1)
 KSEF_DATE_FROM       = (os.environ.get("KSEF_DATE_FROM", "") or "").strip()
 KSEF_SKIP_FAILED_CHUNKS = (os.environ.get("KSEF_SKIP_FAILED_CHUNKS", "1") or "1").strip().lower() not in ("0", "false", "no")
+KSEF_AUTH_RETRIES    = max(int(os.environ.get("KSEF_AUTH_RETRIES", "2") or "2"), 1)
+KSEF_MODE            = (os.environ.get("KSEF_MODE", "daily") or "daily").strip().lower()
+KSEF_XML_ONLY_MISSING = (os.environ.get("KSEF_XML_ONLY_MISSING", "1") or "1").strip().lower() not in ("0", "false", "no")
+KSEF_XML_MAX_FETCH   = max(int(os.environ.get("KSEF_XML_MAX_FETCH", "80") or "80"), 0)
 
 # ── KSEF AUTH ────────────────────────────────────────────────────────────────
 def ksef_get_access_token():
@@ -110,6 +114,8 @@ def resolve_ksef_date_from():
           return _parse_ksef_day(KSEF_DATE_FROM)
       except Exception as e:
           raise ValueError(f"Nieprawidłowe KSEF_DATE_FROM: {KSEF_DATE_FROM!r}") from e
+    if KSEF_MODE == "backfill":
+        return date.today().replace(month=1, day=1)
     return date.today() - timedelta(days=KSEF_LOOKBACK_DAYS)
 
 
@@ -288,21 +294,39 @@ def ksef_query_invoices(access_token, date_from=None, date_to=None):
     while current_start <= end_day:
         current_end = min(current_start + timedelta(days=QUERY_CHUNK_DAYS - 1), end_day)
         print(f"Pobieranie listy faktur: {current_start.isoformat()} -> {current_end.isoformat()}", flush=True)
-        try:
-            batch, current_token = _ksef_query_invoices_chunk_adaptive(
-                current_token,
-                date_from=current_start,
-                date_to=current_end,
-            )
-        except Exception as e:
-            print(f"❌ Błąd zapytania KSeF dla zakresu {current_start.isoformat()} -> {current_end.isoformat()}: {e}")
-            if not KSEF_SKIP_FAILED_CHUNKS:
-                raise
-            print(
-                f"⚠️ Pomijam problematyczny zakres {current_start.isoformat()} -> {current_end.isoformat()} "
-                f"i zachowuję wcześniejsze dane z arkusza.",
-                flush=True,
-            )
+        batch = []
+        chunk_done = False
+        for auth_attempt in range(1, KSEF_AUTH_RETRIES + 1):
+            try:
+                batch, current_token = _ksef_query_invoices_chunk_adaptive(
+                    current_token,
+                    date_from=current_start,
+                    date_to=current_end,
+                )
+                chunk_done = True
+                break
+            except Exception as e:
+                if _is_ksef_auth_error(e) and auth_attempt < KSEF_AUTH_RETRIES:
+                    print(
+                        f"🔄 401 dla zakresu {current_start.isoformat()} -> {current_end.isoformat()}, "
+                        f"odświeżam sesję i ponawiam ({auth_attempt}/{KSEF_AUTH_RETRIES - 1})...",
+                        flush=True,
+                    )
+                    current_token = ksef_get_access_token()
+                    time.sleep(2)
+                    continue
+
+                print(f"❌ Błąd zapytania KSeF dla zakresu {current_start.isoformat()} -> {current_end.isoformat()}: {e}")
+                if not KSEF_SKIP_FAILED_CHUNKS:
+                    raise
+                print(
+                    f"⚠️ Pomijam problematyczny zakres {current_start.isoformat()} -> {current_end.isoformat()} "
+                    f"i zachowuję wcześniejsze dane z arkusza.",
+                    flush=True,
+                )
+                break
+
+        if not chunk_done:
             current_start = current_end + timedelta(days=1)
             continue
 
@@ -907,6 +931,7 @@ def main():
         # - odbudowa historii: od sztywnej daty startowej KSEF_DATE_FROM
         date_from = resolve_ksef_date_from()
         date_to = date.today()
+        print(f"Tryb KSeF: {KSEF_MODE}")
         print(f"Zakres pobierania KSeF: {date_from.isoformat()} -> {date_to.isoformat()}")
         invoices, access_token = ksef_query_invoices(access_token, date_from=date_from, date_to=date_to)
 
@@ -934,6 +959,7 @@ def main():
         xml_fetched = 0
         rows = []
         today = date.today()
+        xml_fetch_limit_hit = False
 
         for inv in invoices:
             # Obsługa SDK dataclass
@@ -968,6 +994,11 @@ def main():
             # Dzięki temu stopniowo uzupełniamy także nową kolumnę "Nr faktury".
             parsed = {}
             should_fetch_xml = (not termin_z_cache) or (not numer_faktury_cache)
+            if KSEF_XML_ONLY_MISSING and ksef_number in existing and termin_z_cache and numer_faktury_cache:
+                should_fetch_xml = False
+            if KSEF_XML_MAX_FETCH and xml_fetched >= KSEF_XML_MAX_FETCH:
+                should_fetch_xml = False
+                xml_fetch_limit_hit = True
             if not should_fetch_xml:
                 # Mamy termin z cache — użyj go bezpośrednio
                 parsed = {"termin_platnosci": termin_z_cache, "numer_faktury": numer_faktury_cache}
@@ -1037,6 +1068,9 @@ def main():
         if not rows:
             print("Brak faktur zakupowych — nic do zapisania.")
             return
+
+        if xml_fetch_limit_hit:
+            print(f"ℹ️ Osiągnięto limit pobrań XML w tym przebiegu: {KSEF_XML_MAX_FETCH}")
 
         # Sortuj po terminie płatności, potem po dacie wystawienia.
         rows.sort(key=lambda r: (
