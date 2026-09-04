@@ -7,6 +7,22 @@ on:
         description: "Data początkowa backfillu (RRRR-MM-DD). Zostaw domyślną, jeśli nie wiesz co wpisać."
         required: false
         default: "2026-03-01"
+      date_to:
+        description: "Data końcowa backfillu (RRRR-MM-DD). Puste = do dzisiaj. Użyj do celowanego doganiania konkretnego okresu bez przeciągania całego zakresu do dziś."
+        required: false
+        default: ""
+      query_wait:
+        description: "Bazowa pauza (sekundy) przed ponowieniem po 429 od KSeF. Zwiększ dla uporczywie odrzucanych zakresów."
+        required: false
+        default: "15"
+      query_retries:
+        description: "Liczba prób ponowienia zapytania po 429, zanim zakres zostanie pominięty."
+        required: false
+        default: "4"
+      chunk_delay:
+        description: "Dodatkowa pauza (sekundy) PO każdym zakresie (udanym i pominiętym), żeby nie wyczerpywać skumulowanego limitu KSeF w gęstych okresach. 0 = wyłączone."
+        required: false
+        default: "0"
 
 # Ten sam "group" co w ksef_sync.yml — oba workflow'y czytają i nadpisują
 # całą zakładkę KSeF, więc nie mogą działać w tym samym czasie (to był jeden
@@ -42,9 +58,11 @@ jobs:
           GS_SA_JSON_B64:         ${{ secrets.GS_SA_JSON_B64 }}
           KSEF_MODE:              backfill
           KSEF_DATE_FROM:         ${{ github.event.inputs.date_from || '2026-03-01' }}
+          KSEF_DATE_TO:           ${{ github.event.inputs.date_to || '' }}
           KSEF_QUERY_CHUNK_DAYS:  3
-          KSEF_QUERY_RETRIES:     4
-          KSEF_QUERY_WAIT:        15
+          KSEF_QUERY_RETRIES:     ${{ github.event.inputs.query_retries || '4' }}
+          KSEF_QUERY_WAIT:        ${{ github.event.inputs.query_wait || '15' }}
+          KSEF_QUERY_CHUNK_DELAY: ${{ github.event.inputs.chunk_delay || '0' }}
           KSEF_SKIP_FAILED_CHUNKS: 1
           KSEF_XML_ONLY_MISSING:  1
           KSEF_XML_MAX_FETCH:     120
