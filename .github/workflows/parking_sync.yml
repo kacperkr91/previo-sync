@@ -2,8 +2,11 @@ name: Parking Sync
 
 on:
   schedule:
-    # Co godzinę pn-pt, 7:00-19:00 CET (6:00-18:00 UTC)
-    - cron: '0 6-18 * * 1-5'
+    # Godziny w UTC: 6:00-18:xx UTC = 8:00-20:xx czasu letniego / 7:00-19:xx zimowego
+    # Pn i pt: co godzinę
+    - cron: '0 6-18 * * 1,5'
+    # Wt, śr, czw: co 30 minut (wtedy zwykle przychodzą zestawienia ZDMK)
+    - cron: '*/30 6-18 * * 2-4'
   workflow_dispatch:  # Możliwość uruchomienia ręcznie
 
 jobs:
