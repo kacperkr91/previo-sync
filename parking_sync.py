@@ -2,12 +2,14 @@
 """
 parking_sync.py
 ---------------
-Pobiera ostatni mail "Stany kart" z Gmaila,
-parsuje listę kart parkingowych i dopisuje do historii w Google Sheets.
+Pobiera maile "Stany kart" od ZDMK z Gmaila (ostatnie 180 dni),
+parsuje listę kart parkingowych i dopisuje nowe zestawienia do historii w Google Sheets.
 
 Logika deduplikacji:
   - Kolumna J przechowuje ID maila dla każdego zestawu (tylko przy pierwszym wierszu)
   - Przed zapisem sprawdza czy to ID już istnieje — jeśli tak, pomija
+  - Odpowiedzi z cytatem (linie zaczynające się od '>') są ignorowane
+  - Data zestawienia = data otrzymania maila (nie data uruchomienia)
   - Przy starcie automatycznie czyści duplikaty z poprzednich błędnych uruchomień
 
 Wymagane secrets w GitHub:
@@ -22,6 +24,7 @@ import json
 import base64
 import requests
 from datetime import datetime
+from zoneinfo import ZoneInfo
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 
@@ -29,6 +32,9 @@ from googleapiclient.discovery import build
 PARKING_SHEET_NAME     = "Parking"
 PARKING_SPREADSHEET_ID = os.environ["PARKING_SPREADSHEET_ID"]
 THRESHOLD_DAYS         = 6
+MIN_CARDS              = 5      # mniej kart = to nie jest zestawienie (np. samo potwierdzenie)
+LOOKBACK               = "newer_than:180d"
+WARSAW                 = ZoneInfo("Europe/Warsaw")
 
 GMAIL_CLIENT_ID     = os.environ["GMAIL_CLIENT_ID"]
 GMAIL_CLIENT_SECRET = os.environ["GMAIL_CLIENT_SECRET"]
@@ -77,22 +83,25 @@ def get_gmail_token():
         resp.raise_for_status()
     return resp.json()["access_token"]
 
-def gmail_search(token, query, max_results=1):
+def gmail_search(token, query, max_results=50):
     resp = requests.get(
         "https://gmail.googleapis.com/gmail/v1/users/me/messages",
         headers={"Authorization": f"Bearer {token}"},
         params={"q": query, "maxResults": max_results},
+        timeout=30,
     )
     resp.raise_for_status()
     return resp.json().get("messages", [])
 
-def gmail_get_body(token, msg_id):
+def gmail_get_message(token, msg_id):
     resp = requests.get(
         f"https://gmail.googleapis.com/gmail/v1/users/me/messages/{msg_id}",
         headers={"Authorization": f"Bearer {token}"},
         params={"format": "full"},
+        timeout=30,
     )
     resp.raise_for_status()
+    msg = resp.json()
 
     def extract(payload):
         if payload.get("mimeType") == "text/plain":
@@ -104,14 +113,20 @@ def gmail_get_body(token, msg_id):
                 return r
         return ""
 
-    return extract(resp.json().get("payload", {}))
+    body = extract(msg.get("payload", {}))
+    ts = int(msg.get("internalDate", "0")) / 1000
+    mail_date = datetime.fromtimestamp(ts, WARSAW).strftime("%Y-%m-%d") if ts else datetime.now(WARSAW).strftime("%Y-%m-%d")
+    return body, mail_date
 
 # ── PARSER ───────────────────────────────────────────────
 def parse_email(text):
     results = []
     lp = 1
     for line in text.split("\n"):
-        raw = line.replace(">", "").strip()
+        # Pomijaj cytaty z poprzednich wiadomosci (odpowiedzi "Re: Stany kart")
+        if line.lstrip().startswith(">"):
+            continue
+        raw = line.replace("<", " ").strip()
         if not raw:
             continue
 
@@ -125,9 +140,14 @@ def parse_email(text):
             continue
         data_str = f"{data_m.group(1).zfill(2)}.{data_m.group(2)}.{data_m.group(3)}"
 
-        if "miesiecz" in raw.lower() or "miesięcz" in raw.lower():
+        # Numer L.P. z maila (Dariusz posluguje sie nim przy doladowaniach)
+        first = raw.split()[0] if raw.split() else ""
+        lp_mail = int(first) if first.isdigit() and len(first) <= 3 else None
+
+        low = raw.lower()
+        if "miesiecz" in low or "miesięcz" in low or low.startswith("mies"):
             results.append({
-                "lp": lp, "bilet": bilet, "data_waznosci": data_str,
+                "lp": lp_mail or lp, "bilet": bilet, "data_waznosci": data_str,
                 "dni": 999, "h": 0, "pozostalo": "miesięczny",
                 "typ": "miesięczny", "alert": False,
             })
@@ -158,7 +178,7 @@ def parse_email(text):
 
         typ = "zapas" if "zapas" in raw else "normalny"
         results.append({
-            "lp": lp, "bilet": bilet, "data_waznosci": data_str,
+            "lp": lp_mail or lp, "bilet": bilet, "data_waznosci": data_str,
             "dni": dni, "h": h, "pozostalo": f"{dni} dni {h}h",
             "typ": typ, "alert": dni < THRESHOLD_DAYS,
         })
@@ -256,6 +276,9 @@ def get_processed_ids(service):
             ids.add(str(row[9]).strip())
     return ids
 
+def get_existing_dates(service):
+    return {str(r[0]).strip() for r in get_all_rows(service)[1:] if r and str(r[0]).strip()}
+
 def append_cards(service, cards, mail_date, msg_id):
     existing = service.values().get(
         spreadsheetId=PARKING_SPREADSHEET_ID,
@@ -289,7 +312,7 @@ def append_cards(service, cards, mail_date, msg_id):
 # ── MAIN ─────────────────────────────────────────────────
 def main():
     print("=== Parking Sync ===")
-    print(f"Data: {datetime.now().strftime('%Y-%m-%d %H:%M')}")
+    print(f"Data: {datetime.now(WARSAW).strftime('%Y-%m-%d %H:%M')}")
 
     # 1. Arkusz
     service = get_service()
@@ -300,43 +323,36 @@ def main():
     print("Pobieranie tokenu Gmail...")
     token = get_gmail_token()
 
-    print("Szukanie maila 'stany kart'...")
-    messages = gmail_search(token, "subject:stany kart", max_results=1)
+    print("Szukanie maili 'stany kart' od ZDMK...")
+    messages = gmail_search(
+        token, f'subject:"stany kart" from:zdmk.krakow.pl {LOOKBACK}', max_results=50
+    )
     if not messages:
-        print("Nie znaleziono maila 'stany kart'")
+        print("Nie znaleziono maili 'stany kart'")
         return
 
-    msg_id = str(messages[0].get("id") or messages[0].get("messageId", ""))
-    print(f"Znaleziono mail: {msg_id}")
-
-    # 3. Deduplikacja
     processed = get_processed_ids(service)
-    if msg_id in processed:
-        print(f"Mail {msg_id} juz w arkuszu — koniec.")
-        return
+    existing_dates = get_existing_dates(service)
+    new_ids = [str(m.get("id")) for m in messages if str(m.get("id")) not in processed]
+    print(f"Znaleziono {len(messages)} maili, nowych: {len(new_ids)}")
 
-    # 4. Parsuj
-    body = gmail_get_body(token, msg_id)
-    if not body:
-        print("Pusta tresc maila")
-        return
+    # Najstarsze najpierw (Gmail zwraca od najnowszych)
+    for msg_id in reversed(new_ids):
+        body, mail_date = gmail_get_message(token, msg_id)
+        cards = parse_email(body or "")
+        if len(cards) < MIN_CARDS:
+            print(f"Mail {msg_id} ({mail_date}): brak zestawienia ({len(cards)} kart) — pomijam")
+            continue
+        if mail_date in existing_dates:
+            print(f"Mail {msg_id}: zestawienie z {mail_date} juz jest w arkuszu — pomijam")
+            continue
 
-    cards = parse_email(body)
-    if not cards:
-        print("Nie udalo sie sparsowac danych")
-        return
+        alerts = [c for c in cards if c["alert"]]
+        print(f"Mail {msg_id} ({mail_date}): {len(cards)} kart, {len(alerts)} do doladowania")
+        append_cards(service, cards, mail_date, msg_id)
+        existing_dates.add(mail_date)
 
-    alerts = [c for c in cards if c["alert"]]
-    print(f"Sparsowano {len(cards)} kart, {len(alerts)} wymaga doladowania")
-    if alerts:
-        print("Karty do doladowania:")
-        for c in alerts:
-            print(f"  ...{c['bilet'][-6:]} — {c['pozostalo']} ({c['typ']})")
-
-    # 5. Zapisz
-    mail_date = datetime.now().strftime("%Y-%m-%d")
-    append_cards(service, cards, mail_date, msg_id)
-    print(f"Gotowe! Mail ID: {msg_id}")
+    print("Gotowe!")
 
 if __name__ == "__main__":
     main()
