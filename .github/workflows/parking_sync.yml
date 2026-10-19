@@ -25,9 +25,11 @@ jobs:
 
       - name: Run parking sync
         env:
-          GMAIL_CLIENT_ID:      ${{ secrets.GMAIL_CLIENT_ID }}
-          GMAIL_CLIENT_SECRET:  ${{ secrets.GMAIL_CLIENT_SECRET }}
-          GMAIL_REFRESH_TOKEN:  ${{ secrets.GMAIL_REFRESH_TOKEN }}
+          # Te same dane OAuth co Previo/Invoice Mail Sync (skrzynka oldtownvistula@gmail.com,
+          # gdzie trafiaja maile "Stany kart"). Stary GMAIL_REFRESH_TOKEN wygasl.
+          GMAIL_CLIENT_ID:      ${{ secrets.INVOICE_GMAIL_CLIENT_ID }}
+          GMAIL_CLIENT_SECRET:  ${{ secrets.INVOICE_GMAIL_CLIENT_SECRET }}
+          GMAIL_REFRESH_TOKEN:  ${{ secrets.INVOICE_GMAIL_REFRESH_TOKEN }}
           PARKING_SPREADSHEET_ID: ${{ secrets.PARKING_SPREADSHEET_ID }}
           GOOGLE_SERVICE_ACCOUNT: ${{ secrets.GOOGLE_SERVICE_ACCOUNT }}
         run: python parking_sync.py
