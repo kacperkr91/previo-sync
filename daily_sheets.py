@@ -495,6 +495,79 @@ def has_reservation_data(service):
     except:
         return False
 
+
+# ── BLOKADA PO ZATWIERDZENIU ─────────────────────────────
+LOCK_PREFIX = "BLOKADA_CEN"
+
+def is_tab_locked(service):
+    """Zakładka zatwierdzona = chroniony zakres BLOKADA_CEN albo status GOTOWE w Q11."""
+    meta = service.get(
+        spreadsheetId=DAILY_SHEET_ID,
+        fields="sheets(properties(title),protectedRanges(description))"
+    ).execute()
+    for s in meta.get("sheets", []):
+        if s["properties"]["title"] != TAB_NAME:
+            continue
+        for pr in s.get("protectedRanges", []):
+            if str(pr.get("description", "")).startswith(LOCK_PREFIX):
+                return True
+    try:
+        q11 = service.values().get(
+            spreadsheetId=DAILY_SHEET_ID, range=f"'{TAB_NAME}'!Q11"
+        ).execute().get("values", [[""]])[0][0]
+    except Exception:
+        q11 = ""
+    return "GOTOWE DO NABIJANIA" in q11 and "NIEGOTOWE" not in q11
+
+
+def report_diffs_on_locked_tab(service):
+    """Nic nie nadpisuje — tylko porównuje Previo z arkuszem i wpisuje ostrzeżenie w Q13."""
+    try:
+        rows = parse_reservations(fetch_today_reservations())
+    except Exception as exc:
+        print(f"Nie udało się pobrać Previo do porównania: {exc}")
+        return
+    sheet_vals = service.values().get(
+        spreadsheetId=DAILY_SHEET_ID,
+        range=f"'{TAB_NAME}'!G3:K200",
+        valueRenderOption="UNFORMATTED_VALUE"
+    ).execute().get("values", [])
+    in_sheet = {}
+    for r in sheet_vals:
+        r = r + [""] * (5 - len(r))
+        if str(r[0]).strip():
+            in_sheet[str(r[0]).strip()] = r[4]
+    diffs = []
+    previo_nrs = set()
+    for row in rows:
+        nr = str(row["nr"]).strip()
+        previo_nrs.add(nr)
+        if nr not in in_sheet:
+            diffs.append(f"{nr} ({row['apt']}): nowa w Previo, cena {row['cena']}")
+            continue
+        try:
+            old = float(str(in_sheet[nr]).replace(",", ".").replace(" ", ""))
+        except ValueError:
+            old = None
+        if old is None or abs(old - float(row["cena"])) > 0.01:
+            diffs.append(f"{nr} ({row['apt']}): arkusz {in_sheet[nr]} vs Previo {row['cena']}")
+    for nr in in_sheet:
+        if nr not in previo_nrs:
+            diffs.append(f"{nr}: brak w Previo (anulowana/przeniesiona?)")
+
+    if diffs:
+        print("RÓŻNICE PO ZATWIERDZENIU (arkusz NIE został zmieniony):")
+        for d in diffs:
+            print("  - " + d)
+        service.values().update(
+            spreadsheetId=DAILY_SHEET_ID,
+            range=f"'{TAB_NAME}'!Q13",
+            valueInputOption="RAW",
+            body={"values": [[f"⚠️ Previo różni się po zatwierdzeniu ({len(diffs)}) — " + "; ".join(diffs)[:400]]]}
+        ).execute()
+    else:
+        print("Brak różnic między Previo a zatwierdzoną zakładką.")
+
 # ── MAIN ─────────────────────────────────────────────────
 def main():
     print(f"Daily sync for {TAB_NAME} ({TODAY_STR})")
@@ -504,6 +577,12 @@ def main():
 
     # Create today's tab (copy from yesterday) if not exists
     tab_existed = get_sheet_id(service, TAB_NAME) is not None
+
+    # Zatwierdzona zakładka (GOTOWE DO NABIJANIA) — nie wolno jej nadpisywać.
+    if tab_existed and is_tab_locked(service):
+        print(f"Zakładka '{TAB_NAME}' zatwierdzona/zablokowana — pomijam zapis.")
+        report_diffs_on_locked_tab(service)
+        return
     copy_tab_from_previous(service)
 
     # Always clear col N (Nr rachunku) after copy — it gets copied from previous day
