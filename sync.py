@@ -269,6 +269,7 @@ def extract_guest_count(res, note=""):
     adults = 0
     children = 0
     repeated_people = 0
+    categorized_guests = 0
 
     for element in res.iter():
         name = re.sub(r"[^a-z0-9]", "", normalize_text(local_tag_name(element)))
@@ -287,9 +288,14 @@ def extract_guest_count(res, note=""):
         )
         if name in {"person", "guest"} and has_identity:
             repeated_people += 1
+        # Previo: jeden <guest> z <guestCategory> na każdą osobę w pokoju
+        if name == "guest" and any(local_tag_name(child) == "guestCategory" for child in list(element)):
+            categorized_guests += 1
 
     if adults or children:
         return adults + children
+    if categorized_guests:
+        return categorized_guests
     if repeated_people > 1:
         return repeated_people
     return extract_guest_count_from_note(note)
