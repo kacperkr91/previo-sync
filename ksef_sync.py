@@ -897,14 +897,20 @@ def read_ksef_paid_map(token):
     rzucamy wyjątek zamiast cicho zwracać {} — inaczej write_to_sheets
     skasowałby statusy i daty opłacenia wszystkim fakturom w tym przebiegu.
     """
-    values, ok = _sheets_get_values(token, f"{KSEF_PAID_SHEET_NAME}!A2", retries=3, wait_seconds=5)
+    values, ok = _sheets_get_values(token, f"{KSEF_PAID_SHEET_NAME}!A2:A", retries=3, wait_seconds=5)
     if not ok:
         raise RuntimeError(
             f"Nie udało się wiarygodnie odczytać {KSEF_PAID_SHEET_NAME} — przerywam zapis, "
             f"żeby nie skasować statusów i dat opłacenia faktur."
         )
 
-    raw = values[0][0] if values and values[0] else ""
+    # Apps Script (writeJson) dzieli JSON na kawałki w A2, A3, ...;
+    # kolejne kawałki mają prefiks "~" (lustrzane odbicie readJson z Apps Script).
+    parts = []
+    for i, row in enumerate(values or []):
+        v = str(row[0]) if row else ""
+        parts.append(v if i == 0 else (v[1:] if v.startswith("~") else v))
+    raw = "".join(parts)
     if not raw:
         return {}
     try:
